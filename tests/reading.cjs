@@ -1,0 +1,158 @@
+const { chromium, webkit, devices } = require(require.resolve('playwright', { paths: ['/Users/wangshanpeng/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules'] }));
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+
+(async () => {
+  const useWebkit = process.env.MOBILE_BROWSER === 'webkit';
+  const browser = await (useWebkit ? webkit : chromium).launch({ headless: true, ...(useWebkit ? {} : { channel: 'chrome' }) });
+  try {
+    const context = await browser.newContext({ serviceWorkers: 'block', ...devices['iPhone 13'] });
+    const page = await context.newPage(), errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    await context.route('**/config.js', route => route.fulfill({ contentType: 'application/javascript', body: 'window.TIJIAN_CLOUD_CONFIG = { enabled: false };' }));
+    const cdp = useWebkit ? null : await context.newCDPSession(page);
+    const index = n => page.waitForFunction(value => document.querySelector('.question-count strong')?.textContent === String(value), n);
+    const settings = () => page.locator('.mobile-reading-settings').tap();
+    const closeSettings = () => page.locator('.modal-footer [data-action=close-modal]').tap();
+    const swipe = async dx => {
+      const target = page.locator('.question-text');
+      await target.scrollIntoViewIfNeeded();
+      if (cdp) {
+        const rect = await target.boundingBox(), x = dx < 0 ? 280 : 100, y = rect.y + 10;
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+        for (let i = 1; i <= 5; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x + dx * i / 5, y }] });
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      } else {
+        await target.evaluate((el, dx) => {
+          const rect = el.getBoundingClientRect(), x = dx < 0 ? 280 : 100, y = rect.y + 10;
+          const point = offset => ({ identifier: 1, clientX: x + offset, clientY: y });
+          for (const [type, touches, changed] of [['touchstart', [point(0)], [point(0)]], ['touchmove', [point(dx)], [point(dx)]], ['touchend', [], [point(dx)]]]) {
+            const event = new Event(type, { bubbles: true, cancelable: true });
+            Object.defineProperties(event, { touches: { value: touches }, changedTouches: { value: changed } });
+            el.dispatchEvent(event);
+          }
+        }, dx);
+      }
+    };
+    await page.goto(process.env.MOBILE_URL || pathToFileURL(path.resolve(__dirname, '../题间·离线刷题.html')).href);
+    await page.getByRole('heading', { name: '我的题库', exact: true }).waitFor();
+    await page.locator('.topbar [data-action=import]').tap();
+    await page.locator('#csv-file').setInputFiles({ name: '全屏测试.csv', mimeType: 'text/csv', buffer: Buffer.from('题型,章节,题目,选项A,选项B,选项C,选项D,答案,解析\n单选题,第一章,马克思主义最根本的世界观和方法论是（ ）。,唯物主义,辩证法,唯物史观,辩证唯物主义和历史唯物主义,D,测试解析\n多选题,第二章,请选择全部正确答案。,甲,乙,丙,丁,A|B,多选解析\n判断题,第三章,这是判断题。,,,,,正确,判断解析\n') });
+    await page.locator('[data-action=confirm-import]').tap();
+    await page.waitForFunction(() => document.querySelector('.hero h2')?.textContent === '全屏测试');
+    await page.locator('[data-action=mode][data-mode=sequential]').tap(); await index(1);
+    assert(await page.locator('body').evaluate(el => el.classList.contains('reading-mode')));
+    for (const selector of ['.question-meta', '.question-instruction', '.mobile-answer-button', '.question-footer', '.topbar', '.sidebar']) assert(!await page.locator(selector).isVisible(), selector);
+    for (const selector of ['.question-labels', '.question-text', '.options', '[data-action=favorite]', '[data-action=toggle-note]', '.attempt-count']) assert(await page.locator(selector).isVisible(), selector);
+    await page.screenshot({ path: '/tmp/tijian-reading-' + (useWebkit ? 'webkit' : 'chrome') + '.png', scale: 'css' });
+    for (const size of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 430, height: 932 }, { width: 844, height: 390 }]) {
+      await page.setViewportSize(size);
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+      const tools = await page.locator('.question-tools').boundingBox();
+      assert(tools.y + tools.height <= size.height + 1 && tools.y + tools.height >= size.height - 1);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('[data-action=choose][data-label=D]').tap();
+    await page.locator('.answer-panel.good').waitFor();
+    assert.equal(await page.locator('.history-short').innerText(), '已练过');
+    assert.equal(await page.locator('.attempt-count strong').innerText(), '1');
+    await page.locator('[data-action=favorite]').tap();
+    await page.locator('[data-action=toggle-note]').tap();
+    await page.locator('#question-note').fill('全屏笔记');
+    await page.waitForFunction(() => document.querySelector('#note-status')?.textContent === '已保存');
+    assert(!await page.locator('.question-tools').isVisible());
+    await page.locator('[data-action=note-done]').tap();
+    assert(await page.locator('.question-tools').isVisible());
+    await swipe(-140); await index(2);
+    await page.locator('[data-action=choose][data-label=A]').tap();
+    await settings(); await closeSettings();
+    assert.equal(await page.locator('.option.selected').count(), 1, 'opening settings preserves multi-select drafts');
+    await page.locator('[data-action=choose][data-label=B]').tap();
+    assert(await page.locator('.question-footer [data-action=submit]').isVisible());
+    assert(!await page.locator('[data-action=next]').isVisible());
+    await page.locator('[data-action=toggle-note]').tap();
+    assert(!await page.locator('.question-footer').isVisible());
+    await page.locator('[data-action=note-done]').tap();
+    assert(await page.locator('.question-footer [data-action=submit]').isVisible());
+    await page.screenshot({ path: '/tmp/tijian-reading-multi-' + (useWebkit ? 'webkit' : 'chrome') + '.png', scale: 'css' });
+    await page.locator('[data-action=submit]').tap();
+    await page.locator('.answer-panel.good').waitFor();
+    assert(!await page.locator('.question-footer').isVisible());
+    await swipe(-140); await index(3);
+    assert(!await page.locator('.question-footer').isVisible());
+    await page.locator('[data-action=choose][data-label=A]').tap();
+    await page.locator('.answer-panel.good').waitFor();
+    await settings(); await page.locator('[data-action=settings-card]').tap();
+    await page.locator('.answer-sheet-open .answer-card').waitFor();
+    await page.locator('[data-action=jump][data-index="0"]').tap(); await index(1);
+    assert(!await page.locator('.practice-aside').isVisible());
+    await page.evaluate(() => new Promise((resolve, reject) => {
+      const request = indexedDB.open('tijian-offline', 1);
+      request.onsuccess = () => { const db = request.result, tx = db.transaction('workspace', 'readwrite'), store = tx.objectStore('workspace'), get = store.get('main'); get.onsuccess = () => { const old = get.result; old.settings.mobileFullscreen = false; store.put(old, 'main'); }; tx.oncomplete = () => { db.close(); resolve(); }; tx.onerror = () => reject(tx.error); };
+      request.onerror = () => reject(request.error);
+    }));
+    await page.reload(); await page.locator('[data-action=continue]').tap(); await index(1);
+    assert(await page.locator('body').evaluate(el => el.classList.contains('reading-mode')));
+    assert.equal(await page.locator('#question-note').inputValue(), '全屏笔记');
+    assert.equal(await page.locator('[data-action=favorite]').innerText(), '已收藏');
+    await page.setViewportSize({ width: 1440, height: 1040 });
+    await page.waitForFunction(() => !document.querySelector('.practice-aside').hasAttribute('aria-hidden'));
+    assert(await page.locator('body').evaluate(el => el.classList.contains('reading-mode')));
+    assert(await page.locator('[data-action=next]').isVisible());
+    assert(await page.locator('.practice-aside').isVisible());
+    assert(await page.locator('.question-instruction').isVisible());
+    assert(await page.locator('.question-count').isVisible());
+    assert(!await page.locator('.question-meta .chapter').isVisible());
+    assert.equal(await page.locator('.practice-aside').getAttribute('aria-hidden'), null);
+    assert(!await page.locator('.question-card').evaluate(el => el.inert));
+    await page.locator('#question-note').evaluate(el => el.blur());
+    await page.screenshot({ path: '/tmp/tijian-reading-desktop.png', scale: 'css' });
+    await page.setViewportSize({ width: 800, height: 1000 });
+    assert(!await page.locator('.practice-aside').isVisible());
+    await settings(); await page.locator('[data-action=settings-card]').click();
+    await page.locator('.answer-sheet-open .answer-card').waitFor();
+    assert(await page.locator('.question-card').evaluate(el => el.inert));
+    await page.keyboard.press('Escape');
+    assert(!await page.locator('.practice-aside').isVisible());
+    assert.equal(await page.locator('.mobile-reading-settings').evaluate(el => el === document.activeElement), true);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => document.body.classList.contains('reading-mode'));
+    await settings(); await page.locator('[data-action=settings-card]').tap();
+    await page.locator('.answer-card [data-action=summary]').tap();
+    await page.locator('.complete-card').waitFor();
+    assert(!await page.locator('body').evaluate(el => el.classList.contains('reading-mode')));
+    await page.locator('.mobile-nav [data-view=exams]').tap();
+    await page.locator('[data-action=exam-config]').tap();
+    for (let i = 0; i < 3; i++) await page.locator('#exam-count-' + i).fill('1');
+    await page.locator('[data-action=exam-start]').tap();
+    await page.locator('.mobile-focus-bar .exam-clock').waitFor();
+    assert(await page.locator('body.reading-mode').count());
+    assert(!await page.locator('.question-instruction').isVisible());
+    assert(await page.locator('.question-tools [data-action=exam-submit]').isVisible());
+    for (const size of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 1440, height: 1040 }]) {
+      await page.setViewportSize(size);
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+      assert(await page.locator('.mobile-focus-bar .exam-clock').isVisible());
+      assert.equal(await page.locator('.practice-aside').isVisible(), size.width >= 1000);
+    }
+    await page.locator('[data-action=exam-choose][data-label=A]').tap();
+    assert.equal(await page.locator('.answer-panel').count(), 0);
+    await page.locator('.answer-card [data-action=exam-submit]').tap();
+    await page.getByRole('heading', { name: '确认交卷？', exact: true }).waitFor();
+    await page.locator('[data-action=confirm]').tap();
+    await page.getByRole('heading', { name: '考试成绩', exact: true }).waitFor();
+    await page.locator('[data-action=exam-review][data-filter=""]').tap();
+    await page.locator('.answer-panel').waitFor();
+    assert(await page.locator('body.reading-mode').count());
+    assert(await page.locator('.practice-aside').isVisible());
+    assert(!await page.locator('.question-meta .chapter').isVisible());
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert(!await page.locator('.practice-aside').isVisible());
+    await settings(); await page.locator('[data-action=settings-card]').tap();
+    await page.locator('.answer-sheet-open .answer-card').waitFor();
+    assert(await page.locator('#exam-review-filter').isVisible());
+    assert.deepEqual(errors, []);
+    console.log('PASS: default compact practice, legacy preference compatibility, desktop answer card, notes/favorite persistence, swipe, timed exams and review (' + (useWebkit ? 'WebKit' : 'Chrome') + ')');
+  } finally { await browser.close(); }
+})().catch(e => { console.error(e); process.exit(1); });

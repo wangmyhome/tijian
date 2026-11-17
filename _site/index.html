@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="题间">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="theme-color" content="#1d6655"><title>题间 · 离线刷题</title>
+  <link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="mobile.css">
+</head>
+<body>
+  <div id="app"><div class="boot">题间 <span>正在打开你的学习空间…</span></div></div>
+  <div id="overlay"></div><div id="toast" role="status" aria-live="polite"></div>
+  <input type="file" id="csv-file" accept=".csv,text/csv" hidden>
+  <input type="file" id="backup-file" accept=".json,application/json" hidden>
+  <script src="core.js"></script><script src="seed.js"></script><script src="config.js"></script><script src="cloud.js"></script><script src="app.js"></script>
+</body>
+</html>
