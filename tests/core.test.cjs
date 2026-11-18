@@ -70,3 +70,23 @@ test('backup validation rejects malformed records and unsafe activity values', (
   assert.throws(() => C.validateState({ ...base, activity: { '2026-11-17': { attempts: '<img>', right: 1 } } }), /统计/);
   assert.throws(() => C.validateState({ ...base, records: { x: {} } }), /记录/);
 });
+
+test('bank CSV export round-trips all 1751 questions in original order', () => {
+  const questions = C.inspect(C.parseCSV(fs.readFileSync(path.resolve(__dirname, '../../理论题.csv'), 'utf8'))).map(row => row.q);
+  const csv = C.exportBank({ questions }), restored = C.inspect(C.parseCSV(csv));
+  assert(csv.startsWith('\uFEFF'));
+  assert(restored.every(row => !row.validation && !row.duplicate));
+  assert.deepEqual(restored.map(row => row.q), questions);
+});
+
+test('bank CSV export preserves sparse and multi-letter options, quotes, commas, multiline text and both judgment answers', () => {
+  const questions = [
+    C.normalize({ 题目ID: 'long-labels', 题型: '多选题', 章节: '第一章/基础', 题目: '包含逗号,和"引号"\n还有换行', 选项A: '选项,甲', 选项G: '选项"庚"', 选项AA: '选项\n双A', 选项AB: '双B', 答案: 'A|AA|AB', 解析: '解析,保留"格式"\n下一行' }),
+    C.normalize({ 题目ID: 'true', 题型: '判断题', 题目: '正确判断', 答案: '正确' }),
+    C.normalize({ 题目ID: 'false', 题型: '判断题', 题目: '错误判断', 答案: '错误' })
+  ];
+  const csv = C.exportBank({ questions }), entries = C.parseCSV(csv);
+  assert.deepEqual(Object.keys(entries[0].raw).filter(key => key.startsWith('选项')), ['选项A', '选项B', '选项G', '选项AA', '选项AB']);
+  assert.equal(entries[0].raw.答案, 'A|AA|AB');
+  assert.deepEqual(C.inspect(entries).map(row => row.q), questions);
+});

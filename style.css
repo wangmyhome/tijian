@@ -215,3 +215,5 @@ input:focus,select:focus,textarea:focus{outline-color:var(--focus)}
 .mode-resume{display:block;color:var(--accent);font-size:10px;margin-top:7px;line-height:1.5}
 .mode-range{position:absolute;bottom:9px;right:14px;color:var(--accent);font-size:11px;padding:5px 3px;min-height:28px}
 .mode-range:hover{text-decoration:underline}
+
+.bank-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}

@@ -1,4 +1,4 @@
-const CACHE = 'tijian-mobile-20261118-v15';
+const CACHE = 'tijian-mobile-20261118-v16';
 const FILES = ['./', 'index.html', 'style.css', 'mobile.css', 'core.js', 'seed.js', 'config.js', 'cloud.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable.png', 'icons/apple-touch-icon.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(FILES)).then(() => self.skipWaiting()));

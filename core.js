@@ -109,6 +109,15 @@
     return exam;
   }
   function escapeCSV(value) { const s = String(value ?? ''); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+  function exportBank(bank) {
+    const labels = [...new Set(bank.questions.flatMap(q => q.options.map(o => o.label)))].sort((a, b) => a.length - b.length || a.localeCompare(b));
+    const headers = ['题目ID', '题型', '章节', '题目', ...labels.map(label => '选项' + label), '答案', '解析'];
+    const rows = bank.questions.map(q => {
+      const options = new Map(q.options.map(o => [o.label, o.text]));
+      return [q.id, q.type, q.chapter, q.text, ...labels.map(label => options.get(label) || ''), q.type === '判断题' ? q.answer.includes('A') ? '正确' : '错误' : q.answer.join('|'), q.analysis];
+    });
+    return '\uFEFF' + [headers, ...rows].map(row => row.map(escapeCSV).join(',')).join('\r\n');
+  }
   function template() {
     const headers = ['题目ID', '题型', '章节', '题目', ...Array.from({ length: 8 }, (_, i) => '选项' + label(i)), '答案', '解析'];
     const rows = [
@@ -187,7 +196,7 @@
     if (s.activeExam != null) validateExam(s.activeExam);
     return s;
   }
-  const api = { TYPES, THEMES, hash, label, optionLabel, parseCSV, normalize, inspect, correct, signature, template, validateState, examPaper, examResult, validateExam, practiceKey, practicePlace, reconcilePractice, rememberPractice, restorePractice };
+  const api = { TYPES, THEMES, hash, label, optionLabel, parseCSV, normalize, inspect, correct, signature, template, exportBank, validateState, examPaper, examResult, validateExam, practiceKey, practicePlace, reconcilePractice, rememberPractice, restorePractice };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.QuizCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
