@@ -122,3 +122,18 @@ test('independent practice positions and random order sync after offline edits a
   assert.equal(a.state.session.index, 1);
   assert.equal(a.state.practiceSessions[C.practiceKey('b', 'sequential')].index, 1);
 });
+
+test('category positions, chosen answers and explicit clearing sync while lifetime history stays intact', async () => {
+  const remote = server(), a = device(remote); await a.sync.run();
+  const q = a.state.banks[0].questions[0]; q.category = '程序设计';
+  a.state.banks[0].questions.push({ ...clone(q), id: 'second', text: '第二题' });
+  a.state.records['b/' + q.id] = { attempts: 2, right: 0, wrong: 2, lastCorrect: false, note: '', history: [{ selected: ['B'], correct: false, at: '2026-11-18' }] };
+  a.state.session = { bankId: 'b', mode: 'category', filters: { category: '程序设计' }, ids: [q.id, 'second'], index: 1, answers: { [q.id]: { selected: ['B'], correct: false } }, drafts: {}, complete: false };
+  C.rememberPractice(a.state); a.sync.changed(); await a.sync.run();
+  const b = device(remote); await b.sync.run(); C.restorePractice(b.state);
+  assert.equal(b.state.session.index, 1); assert.deepEqual(b.state.session.answers[q.id].selected, ['B']);
+  delete b.state.session.answers[q.id]; C.rememberPractice(b.state); b.sync.changed(); await b.sync.run();
+  await a.sync.run(); C.restorePractice(a.state);
+  assert.equal(a.state.session.index, 1); assert.equal(a.state.session.answers[q.id], undefined);
+  assert.equal(a.state.records['b/' + q.id].attempts, 2); assert.equal(a.state.records['b/' + q.id].lastCorrect, false);
+});

@@ -11,7 +11,7 @@
     for (let i = 0; i < text.length; i++) {
       const c = text[i];
       if (quoted) { if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else { quoted = false; closed = true; } } else { field += c; if (c === '\n') line++; } continue; }
-      if (c === '"') { if (field.trim() || closed) throw new Error('第 ' + line + ' 行的引号格式不正确。'); quoted = true; field = ''; }
+      if (c === '"') { if (closed) throw new Error('第 ' + line + ' 行的引号格式不正确。'); if (field.trim()) field += c; else { quoted = true; field = ''; } }
       else if (c === ',') { row.push(field); field = ''; closed = false; }
       else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; line++; pushRow(); start = line; }
       else { if (closed && c.trim()) throw new Error('第 ' + line + ' 行：结束引号后只能是逗号或换行。'); if (!closed) field += c; }
@@ -56,7 +56,8 @@
     if (!pick(raw, ['章节', '分类', 'chapter']) && chapter.includes('/')) chapter = chapter.split('/').slice(1).join('/');
     chapter = chapter.split('/').map(s => s.trim()).filter(Boolean).join('/') || '未分类';
     let analysis = pick(raw, ['解析', 'analysis']); if (['无', '暂无', 'null'].includes(analysis.toLowerCase())) analysis = '';
-    const q = { id: pick(raw, ['题目ID', 'testId', 'id']) || 'q-' + hash(JSON.stringify(raw)) + '-' + index, type, text, options, answer: [...answer].sort(), chapter, analysis };
+    const category = pick(raw, ['一级分类', 'category']), subcategory = pick(raw, ['二级分类', 'subcategory']), number = pick(raw, ['序号', 'number']);
+    const q = { id: pick(raw, ['题目ID', 'testId', 'id']) || 'q-' + hash(JSON.stringify(raw)) + '-' + index, type, text, options, answer: [...answer].sort(), chapter, analysis, category, subcategory, number };
     return q;
   }
   function inspect(entries) {
@@ -67,6 +68,49 @@
     });
   }
   function correct(q, selected) { return [...new Set(selected)].sort().join('|') === [...q.answer].sort().join('|'); }
+  const categoryOf = q => q.category || q.chapter.split('/')[0] || '未分类';
+  function mergeBankQuestions(bank, incoming, createId) {
+    const byId = new Map(bank.questions.map(q => [q.id, q])), bySignature = new Map(bank.questions.map(q => [signature(q), q]));
+    const result = { added: 0, updated: 0, skipped: 0 };
+    for (const q of incoming) {
+      const sig = signature(q), sameId = byId.get(q.id), existing = sameId?.type === q.type && sameId.text.trim() === q.text.trim() ? sameId : bySignature.get(sig);
+      if (existing) {
+        const metadata = { chapter: q.chapter, analysis: q.analysis };
+        for (const field of ['category', 'subcategory', 'number']) if (q[field]) metadata[field] = q[field];
+        if (Object.entries(metadata).some(([key, value]) => (existing[key] || '') !== value)) { Object.assign(existing, metadata); result.updated++; }
+        else result.skipped++;
+      } else {
+        const added = { ...q, id: byId.has(q.id) ? createId() : q.id };
+        bank.questions.push(added); byId.set(added.id, added); bySignature.set(sig, added); result.added++;
+      }
+    }
+    return result;
+  }
+  function fillCategories(banks, reference) {
+    const byId = new Map(reference.map(q => [q.id, q]));
+    for (const bank of banks) for (const q of bank.questions) {
+      const source = byId.get(q.id);
+      if (!source || signature(source) !== signature(q) || q.category) continue;
+      q.category = source.category; q.subcategory = source.subcategory; q.number ||= source.number;
+    }
+  }
+  function previousAnswers(state, bank, questions) {
+    const answers = {};
+    for (const q of questions) {
+      const history = state.records[bank.id + '/' + q.id]?.history, last = history?.[history.length - 1];
+      if (last && validSelection(q, last.selected)) answers[q.id] = { selected: [...last.selected], correct: correct(q, last.selected), at: last.at };
+    }
+    return answers;
+  }
+  function previousDrafts(state, bank, questions) {
+    const drafts = {}, sessions = [state.session, ...Object.values(state.practiceSessions || {})].filter(s => s?.bankId === bank.id).sort((a, b) => String(b.updatedAt || b.startedAt || '').localeCompare(String(a.updatedAt || a.startedAt || '')));
+    for (const q of questions) {
+      const latest = sessions.find(s => s.answers[q.id] || s.drafts?.[q.id]);
+      if (latest && !latest.answers[q.id] && validSelection(q, latest.drafts[q.id])) drafts[q.id] = [...latest.drafts[q.id]];
+    }
+    return drafts;
+  }
+  const validSelection = (q, selected) => Array.isArray(selected) && selected.length && new Set(selected).size === selected.length && (q.type === '多选题' || selected.length === 1) && selected.every(label => q.options.some(o => o.label === label));
   function shuffled(items, random = Math.random) {
     const result = [...items];
     for (let i = result.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [result[i], result[j]] = [result[j], result[i]]; }
@@ -111,43 +155,45 @@
   function escapeCSV(value) { const s = String(value ?? ''); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
   function exportBank(bank) {
     const labels = [...new Set(bank.questions.flatMap(q => q.options.map(o => o.label)))].sort((a, b) => a.length - b.length || a.localeCompare(b));
-    const headers = ['题目ID', '题型', '章节', '题目', ...labels.map(label => '选项' + label), '答案', '解析'];
+    const headers = ['序号', '一级分类', '二级分类', '题目ID', '题型', '章节', '题目', ...labels.map(label => '选项' + label), '答案', '解析'];
     const rows = bank.questions.map(q => {
       const options = new Map(q.options.map(o => [o.label, o.text]));
-      return [q.id, q.type, q.chapter, q.text, ...labels.map(label => options.get(label) || ''), q.type === '判断题' ? q.answer.includes('A') ? '正确' : '错误' : q.answer.join('|'), q.analysis];
+      return [q.number || '', q.category || '', q.subcategory || '', q.id, q.type, q.chapter, q.text, ...labels.map(label => options.get(label) || ''), q.type === '判断题' ? q.answer.includes('A') ? '正确' : '错误' : q.answer.join('|'), q.analysis];
     });
     return '\uFEFF' + [headers, ...rows].map(row => row.map(escapeCSV).join(',')).join('\r\n');
   }
   function template() {
-    const headers = ['题目ID', '题型', '章节', '题目', ...Array.from({ length: 8 }, (_, i) => '选项' + label(i)), '答案', '解析'];
+    const headers = ['序号', '一级分类', '二级分类', '题目ID', '题型', '章节', '题目', ...Array.from({ length: 8 }, (_, i) => '选项' + label(i)), '答案', '解析'];
     const rows = [
       ['sample-001', '单选题', '第一章/Java基础', 'Java 源文件的扩展名是？', '.class', '.java', '.js', '.jar', '', '', '', '', 'B', 'Java 源文件扩展名为 .java。'],
       ['sample-002', '多选题', '第一章/编程基础', '以下哪些属于编程语言？', 'Java', 'Python', 'C', 'C++', 'JavaScript', 'Go', 'Rust', '', 'A|B|C|D|E|F|G', '以上七项均属于编程语言。'],
       ['sample-003', '判断题', '第二章/数据库基础', 'SQL 查询可以使用 WHERE 子句筛选记录。', '', '', '', '', '', '', '', '', '正确', 'WHERE 子句用于按条件筛选记录。']
     ];
-    return '\uFEFF' + [headers, ...rows].map(r => r.map(escapeCSV).join(',')).join('\r\n');
+    return '\uFEFF' + [headers, ...rows.map((r, i) => [i + 1, i === 2 ? '数据库程序设计' : '程序设计基础', i === 2 ? 'SQL 基础' : '编程语言', ...r])].map(r => r.map(escapeCSV).join(',')).join('\r\n');
   }
   const practiceTypes = { single: '单选题', multiple: '多选题', judgment: '判断题' };
-  const practiceModes = ['sequential', 'random', 'chapter', 'single', 'multiple', 'judgment', 'wrong', 'favorite', 'type', 'custom'];
+  const practiceModes = ['sequential', 'random', 'chapter', 'category', 'single', 'multiple', 'judgment', 'wrong', 'favorite', 'type', 'custom'];
   function practiceKey(bankId, mode, filters = {}) {
-    return JSON.stringify([bankId, mode, filters.chapter || '', practiceTypes[mode] || filters.type || '', filters.status || '', mode === 'random' ? Number(filters.count) || 20 : '', filters.scope || '']);
+    const parts = [bankId, mode, filters.chapter || '', practiceTypes[mode] || filters.type || '', filters.status || '', mode === 'random' ? Number(filters.count) || 20 : '', filters.scope || ''];
+    if (mode === 'category') parts.push(filters.category || '');
+    return JSON.stringify(parts);
   }
   const practicePlace = (bankId, mode) => JSON.stringify([bankId, mode]);
   function reconcilePractice(session, bank) {
     if (!session || !bank || !practiceModes.includes(session.mode) || !Array.isArray(session.ids) || !session.ids.length || !Number.isInteger(session.index) || session.index < 0 || session.index >= session.ids.length || !session.answers || typeof session.answers !== 'object') return null;
     const questions = new Map(bank.questions.map(q => [q.id, q])), savedFilters = session.filters || {};
     const filters = { chapter: typeof savedFilters.chapter === 'string' ? savedFilters.chapter : '', type: TYPES.includes(savedFilters.type) ? savedFilters.type : '', status: ['new', 'done'].includes(savedFilters.status) ? savedFilters.status : '' };
+    if (session.mode === 'category') filters.category = typeof savedFilters.category === 'string' ? savedFilters.category : '';
     if (session.mode === 'random') filters.count = Number.isInteger(savedFilters.count) && savedFilters.count > 0 ? savedFilters.count : 20;
     if (typeof savedFilters.scope === 'string' && savedFilters.scope) filters.scope = savedFilters.scope;
-    const ids = [...new Set(session.ids.filter(id => questions.has(id)))];
+    const ids = [...new Set(session.ids.filter(id => questions.has(id) && (session.mode !== 'category' || categoryOf(questions.get(id)) === filters.category)))];
     // Keep this round's answered questions even when they no longer match "unpracticed" or a review filter.
-    if (!filters.scope && !filters.status && ['sequential', 'chapter', 'single', 'multiple', 'judgment', 'type'].includes(session.mode)) {
+    if (!filters.scope && !filters.status && ['sequential', 'chapter', 'category', 'single', 'multiple', 'judgment', 'type'].includes(session.mode)) {
       const known = new Set(ids);
-      for (const q of bank.questions) if (!known.has(q.id) && (!filters.chapter || q.chapter === filters.chapter || q.chapter.startsWith(filters.chapter + '/')) && (!(practiceTypes[session.mode] || filters.type) || q.type === (practiceTypes[session.mode] || filters.type))) { ids.push(q.id); known.add(q.id); }
+      for (const q of bank.questions) if (!known.has(q.id) && (session.mode !== 'category' || categoryOf(q) === filters.category) && (!filters.chapter || q.chapter === filters.chapter || q.chapter.startsWith(filters.chapter + '/')) && (!(practiceTypes[session.mode] || filters.type) || q.type === (practiceTypes[session.mode] || filters.type))) { ids.push(q.id); known.add(q.id); }
     }
     if (!ids.length) return null;
     const answers = {}, drafts = {};
-    const validSelection = (q, selected) => Array.isArray(selected) && selected.length && new Set(selected).size === selected.length && (q.type === '多选题' || selected.length === 1) && selected.every(label => q.options.some(o => o.label === label));
     for (const id of ids) {
       const q = questions.get(id), answer = session.answers[id], draft = session.drafts?.[id];
       if (answer && validSelection(q, answer.selected)) answers[id] = { ...answer, correct: correct(q, answer.selected) };
@@ -181,7 +227,7 @@
     if (!s || s.version !== 1 || !Array.isArray(s.banks) || !s.records || typeof s.records !== 'object' || Array.isArray(s.records) || !s.settings || typeof s.settings !== 'object') throw new Error('不是有效的题间备份文件。');
     for (const field of ['practiceSessions', 'practiceLast']) if (s[field] !== undefined && (!s[field] || typeof s[field] !== 'object' || Array.isArray(s[field]))) throw new Error('备份中的练习进度无效。');
     const bankIds = new Set();
-    for (const b of s.banks) { if (!b.id || bankIds.has(b.id) || typeof b.name !== 'string' || !Array.isArray(b.questions)) throw new Error('备份中的题库信息无效。'); bankIds.add(b.id); const ids = new Set(); for (const q of b.questions) { if (!q.id || ids.has(q.id) || !TYPES.includes(q.type) || typeof q.text !== 'string' || !q.text.trim() || !Array.isArray(q.options) || q.options.length < 2 || !Array.isArray(q.answer) || !q.answer.length || typeof q.chapter !== 'string' || typeof q.analysis !== 'string') throw new Error('备份中的题目格式无效。'); ids.add(q.id); const labels = new Set(q.options.map(o => o.label)); if (labels.size !== q.options.length || q.options.some(o => typeof o.label !== 'string' || !/^[A-Z]+$/.test(o.label) || typeof o.text !== 'string') || q.answer.some(a => !labels.has(a)) || (q.type !== '多选题' && q.answer.length !== 1)) throw new Error('备份中的答案或选项无效。'); } }
+    for (const b of s.banks) { if (!b.id || bankIds.has(b.id) || typeof b.name !== 'string' || !Array.isArray(b.questions)) throw new Error('备份中的题库信息无效。'); bankIds.add(b.id); const ids = new Set(); for (const q of b.questions) { if (!q.id || ids.has(q.id) || !TYPES.includes(q.type) || typeof q.text !== 'string' || !q.text.trim() || !Array.isArray(q.options) || q.options.length < 2 || !Array.isArray(q.answer) || !q.answer.length || typeof q.chapter !== 'string' || typeof q.analysis !== 'string') throw new Error('备份中的题目格式无效。'); if (['category', 'subcategory', 'number'].some(field => q[field] !== undefined && typeof q[field] !== 'string')) throw new Error('备份中的题目分类或序号无效。'); ids.add(q.id); const labels = new Set(q.options.map(o => o.label)); if (labels.size !== q.options.length || q.options.some(o => typeof o.label !== 'string' || !/^[A-Z]+$/.test(o.label) || typeof o.text !== 'string') || q.answer.some(a => !labels.has(a)) || (q.type !== '多选题' && q.answer.length !== 1)) throw new Error('备份中的答案或选项无效。'); } }
     for (const r of Object.values(s.records)) { if (!r || typeof r !== 'object' || !Number.isFinite(r.attempts) || r.attempts < 0 || !Number.isFinite(r.right) || r.right < 0 || !Number.isFinite(r.wrong) || r.wrong < 0 || typeof r.note !== 'string' || !Array.isArray(r.history) || r.history.some(h => !h || typeof h.at !== 'string' || typeof h.correct !== 'boolean')) throw new Error('备份中的练习记录无效。'); }
     if (s.activity !== undefined && (!s.activity || typeof s.activity !== 'object' || Array.isArray(s.activity) || Object.entries(s.activity).some(([day, a]) => !/^\d{4}-\d{2}-\d{2}$/.test(day) || !a || !Number.isInteger(a.attempts) || a.attempts < 1 || !Number.isInteger(a.right) || a.right < 0 || a.right > a.attempts))) throw new Error('备份中的每日统计无效。');
     if (s.settings.font !== undefined && ![16, 18, 20, 23].includes(Number(s.settings.font))) throw new Error('备份中的字号设置无效。');
@@ -197,7 +243,7 @@
     if (s.activeExam != null) validateExam(s.activeExam);
     return s;
   }
-  const api = { TYPES, THEMES, hash, label, optionLabel, parseCSV, normalize, inspect, correct, signature, template, exportBank, validateState, examPaper, examResult, validateExam, practiceKey, practicePlace, reconcilePractice, rememberPractice, restorePractice };
+  const api = { TYPES, THEMES, hash, label, optionLabel, parseCSV, normalize, inspect, correct, signature, categoryOf, mergeBankQuestions, fillCategories, previousAnswers, previousDrafts, template, exportBank, validateState, examPaper, examResult, validateExam, practiceKey, practicePlace, reconcilePractice, rememberPractice, restorePractice };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.QuizCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

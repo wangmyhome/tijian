@@ -5,7 +5,9 @@ import json
 import shutil
 
 root = Path(__file__).resolve().parent
-csv_source = root.parent / "理论题.csv"
+csv_source = root / "data" / "计算机程序设计员 · 三级_已分类.csv"
+if not csv_source.exists():
+    csv_source = root.parent / "理论题.csv"
 if csv_source.exists():
     csv_text = csv_source.read_text(encoding="utf-8-sig")
     (root / "seed.js").write_text(
