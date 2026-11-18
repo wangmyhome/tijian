@@ -101,7 +101,7 @@ const { pathToFileURL } = require('node:url');
   assert.equal(await page.locator('.bank-row').count(), 2);
   console.log('PASS: complete backup export, restore and persisted recovery');
 
-  await page.locator('[data-action=mode][data-mode=random]').click();
+  await page.locator('[data-action=mode][data-mode=chapter]').click();
   assert((await page.locator('#mode-chapter option').count()) >= 3);
   await page.locator('#mode-chapter').selectOption('第二章');
   await page.locator('[data-action=start-configured]').click();
