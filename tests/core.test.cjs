@@ -90,3 +90,10 @@ test('bank CSV export preserves sparse and multi-letter options, quotes, commas,
   assert.equal(entries[0].raw.答案, 'A|AA|AB');
   assert.deepEqual(C.inspect(entries).map(row => row.q), questions);
 });
+
+test('auto-next delay keeps old backups valid and rejects invalid delays', () => {
+  const state = value => ({ version: 1, banks: [], records: {}, settings: value === undefined ? {} : { autoNextDelay: value } });
+  assert(C.validateState(state()));
+  for (const delay of [0, 0.75, 1.6, 60]) assert.equal(C.validateState(state(delay)).settings.autoNextDelay, delay);
+  for (const delay of [-1, 60.1, Infinity, NaN, null, '2']) assert.throws(() => C.validateState(state(delay)), /等待时间/);
+});

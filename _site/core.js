@@ -187,6 +187,7 @@
     if (s.settings.font !== undefined && ![16, 18, 20, 23].includes(Number(s.settings.font))) throw new Error('备份中的字号设置无效。');
     if (s.settings.theme !== undefined && !THEMES.some(([id]) => id === s.settings.theme)) throw new Error('备份中的主题设置无效。');
     if (s.settings.mobileFullscreen !== undefined && typeof s.settings.mobileFullscreen !== 'boolean') throw new Error('备份中的手机全屏设置无效。');
+    if (s.settings.autoNextDelay !== undefined && (!Number.isFinite(s.settings.autoNextDelay) || s.settings.autoNextDelay < 0 || s.settings.autoNextDelay > 60)) throw new Error('自动下一题等待时间须为 0–60 秒。');
     if (s.exams !== undefined) {
       if (!Array.isArray(s.exams)) throw new Error('备份中的考试记录无效。');
       const ids = new Set();

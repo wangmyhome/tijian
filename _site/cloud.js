@@ -92,6 +92,22 @@
       if (!this.isAdmin) delete personal.banks;
       return this.request('/rest/v1/rpc/tijian_save_account_workspace', { method: 'POST', token: await this.token(), body: { expected_revision: expectedRevision, expected_bank_revision: expectedBankRevision, workspace_payload: personal } });
     }
+    async explain(bankId, question, selected) {
+      const ownerId = this.session?.user.id, token = await this.token();
+      let response;
+      try {
+        response = await this.fetch(this.config.url + '/functions/v1/ai-explain', {
+          method: 'POST', headers: { apikey: this.config.key, Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(70000), cache: 'no-store',
+          body: JSON.stringify({ bankId, questionId: question.id, signature: JSON.stringify([question.type, question.text.trim(), question.options.map(o => [o.label, o.text.trim()]), [...question.answer].sort()]), selected })
+        });
+      } catch (_) { throw new CloudError('AI 解析暂时无法连接，请联网后点击重试。', 'network'); }
+      if (this.session?.user.id !== ownerId) throw new CloudError('账号已切换，本次解析已取消。', 'auth');
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new CloudError(typeof data?.error === 'string' ? data.error : response.status === 404 ? 'AI 解析服务尚未部署，请联系管理员完成配置。' : response.status === 401 ? '登录已过期，请重新登录后使用 AI 解析。' : 'AI 解析失败，请稍后重试。', String(response.status));
+      if (typeof data?.text !== 'string' || !data.text.trim() || data.text.length > 20000) throw new CloudError('AI 未返回有效解析，请重试。', 'response');
+      return { text: data.text.trim(), model: 'deepseek-chat', generatedAt: data.generatedAt || new Date().toISOString() };
+    }
     async logout() {
       const token = this.session?.access_token;
       this.remember(null);

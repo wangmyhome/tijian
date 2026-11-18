@@ -227,6 +227,17 @@ input:focus,select:focus,textarea:focus{outline-color:var(--focus)}
 
 .bank-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
 
+.auto-next-control{display:flex;align-items:center;gap:8px;flex-shrink:0;font-size:12px;color:var(--muted)}
+.auto-next-control input{width:88px;min-height:40px;font-size:16px}
+
+.ai-explanation{margin-top:20px;padding-top:16px;border-top:1px solid var(--line);color:var(--text)}
+.ai-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.ai-heading>strong{font-size:13px;font-weight:600}
+.ai-heading .button{min-height:40px;padding:8px 14px}
+.ai-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;line-height:1.9;margin-top:16px}
+.ai-caption,.ai-status,.ai-error{font-size:12px;line-height:1.7;margin-top:10px;color:var(--muted)}
+.ai-error{color:var(--red)}
+
 </style>
   <style>
 /* iPhone layout. Desktop components keep their existing layout above 650px. */
@@ -612,6 +623,7 @@ input:focus,select:focus,textarea:focus{outline-color:var(--focus)}
     if (s.settings.font !== undefined && ![16, 18, 20, 23].includes(Number(s.settings.font))) throw new Error('备份中的字号设置无效。');
     if (s.settings.theme !== undefined && !THEMES.some(([id]) => id === s.settings.theme)) throw new Error('备份中的主题设置无效。');
     if (s.settings.mobileFullscreen !== undefined && typeof s.settings.mobileFullscreen !== 'boolean') throw new Error('备份中的手机全屏设置无效。');
+    if (s.settings.autoNextDelay !== undefined && (!Number.isFinite(s.settings.autoNextDelay) || s.settings.autoNextDelay < 0 || s.settings.autoNextDelay > 60)) throw new Error('自动下一题等待时间须为 0–60 秒。');
     if (s.exams !== undefined) {
       if (!Array.isArray(s.exams)) throw new Error('备份中的考试记录无效。');
       const ids = new Set();
@@ -725,6 +737,22 @@ window.TIJIAN_CLOUD_CONFIG = { enabled: false };
       const personal = copy(payload);
       if (!this.isAdmin) delete personal.banks;
       return this.request('/rest/v1/rpc/tijian_save_account_workspace', { method: 'POST', token: await this.token(), body: { expected_revision: expectedRevision, expected_bank_revision: expectedBankRevision, workspace_payload: personal } });
+    }
+    async explain(bankId, question, selected) {
+      const ownerId = this.session?.user.id, token = await this.token();
+      let response;
+      try {
+        response = await this.fetch(this.config.url + '/functions/v1/ai-explain', {
+          method: 'POST', headers: { apikey: this.config.key, Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(70000), cache: 'no-store',
+          body: JSON.stringify({ bankId, questionId: question.id, signature: JSON.stringify([question.type, question.text.trim(), question.options.map(o => [o.label, o.text.trim()]), [...question.answer].sort()]), selected })
+        });
+      } catch (_) { throw new CloudError('AI 解析暂时无法连接，请联网后点击重试。', 'network'); }
+      if (this.session?.user.id !== ownerId) throw new CloudError('账号已切换，本次解析已取消。', 'auth');
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new CloudError(typeof data?.error === 'string' ? data.error : response.status === 404 ? 'AI 解析服务尚未部署，请联系管理员完成配置。' : response.status === 401 ? '登录已过期，请重新登录后使用 AI 解析。' : 'AI 解析失败，请稍后重试。', String(response.status));
+      if (typeof data?.text !== 'string' || !data.text.trim() || data.text.length > 20000) throw new CloudError('AI 未返回有效解析，请重试。', 'response');
+      return { text: data.text.trim(), model: 'deepseek-chat', generatedAt: data.generatedAt || new Date().toISOString() };
     }
     async logout() {
       const token = this.session?.access_token;
@@ -883,7 +911,7 @@ window.TIJIAN_CLOUD_CONFIG = { enabled: false };
   const dateKey = value => { const d = new Date(value || Date.now()); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
   const modes = { sequential: '顺序练习', random: '随机练习', single: '单选练习', multiple: '多选练习', judgment: '判断练习', wrong: '错题重练', favorite: '收藏练习', chapter: '章节练习', type: '题型练习', custom: '专项练习' };
   const practiceTypes = { single: '单选题', multiple: '多选题', judgment: '判断题' };
-  const defaultSettings = { theme: 'system', font: 18, autoCorrect: false, autoWrong: false, analysis: true, notes: true };
+  const defaultSettings = { theme: 'system', font: 18, autoCorrect: false, autoWrong: false, autoNextDelay: 1.6, analysis: true, notes: true };
   const cloudConfig = window.TIJIAN_CLOUD_CONFIG || { enabled: false };
   const cloudClient = cloudConfig.enabled ? new window.QuizCloud.Client(cloudConfig) : null;
   let localOwner = '';
@@ -897,7 +925,7 @@ window.TIJIAN_CLOUD_CONFIG = { enabled: false };
   let db, state, saveQueue = Promise.resolve(), storageOK = true, storageError = '';
   let ui = { view: 'home', bankId: '', query: '', type: '', chapter: '', listPage: 0, draft: [], showNote: false, cardPage: 0, sessionBankId: '', lastFocus: null };
   let pendingImport = null, editorIndex = null, previewPage = 0, confirmAction = null, editorFields = [];
-  let toastTimer, nextTimer, noteTimer;
+  let toastTimer, nextTimer, noteTimer, aiJob = null;
   function toast(message) { $('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 3800); }
   function openDB() { return new Promise((resolve, reject) => { const r = indexedDB.open('tijian-offline', 1); r.onupgradeneeded = () => r.result.createObjectStore('workspace'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); r.onblocked = () => reject(new Error('请关闭其他题间窗口后重试。')); }); }
   function readDB(key = 'main') { return new Promise((resolve, reject) => { const tx = db.transaction('workspace', 'readonly'); const r = tx.objectStore('workspace').get(key); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); }); }
@@ -1092,7 +1120,7 @@ window.TIJIAN_CLOUD_CONFIG = { enabled: false };
     html += '<div class="practice-layout"><div><article class="question-card"><div class="question-meta"><span class="chapter" title="' + esc(q.chapter) + '">' + icon('chapter') + ' ' + esc(q.chapter.replaceAll('/', ' / ')) + '</span><span class="question-count"><strong>' + (s.index + 1) + '</strong> / ' + s.ids.length + '</span></div><div class="question-labels"><span class="chip green">' + q.type + '</span>' + historyBadge(r) + '</div><h2 class="question-text">' + esc(q.text) + '</h2><p class="question-instruction">' + (q.type === '多选题' ? '选择所有正确选项，点击“提交答案”。全部选对才算正确。' : '选择一个答案，选择后立即判题。') + '</p><div class="options" role="group" aria-label="题目选项">';
     for (const o of q.options) { const selected = (answer ? answer.selected : ui.draft).includes(o.label); const good = answer && q.answer.includes(o.label), bad = answer && selected && !good; html += '<button class="option ' + (q.type === '多选题' ? 'multiple ' : '') + (selected ? 'selected ' : '') + (good ? 'correct ' : '') + (bad ? 'incorrect ' : '') + '" data-action="choose" data-label="' + o.label + '" aria-pressed="' + selected + '" ' + (answer ? 'disabled' : '') + '><span class="option-letter">' + o.label + '</span><span class="option-content">' + esc(o.text) + '</span>' + (good ? '<span class="option-result good-text">正确答案</span>' : bad ? '<span class="option-result bad-text">你的选择</span>' : '') + '</button>'; }
     html += '</div>';
-    if (answer) html += '<div class="answer-panel ' + (answer.correct ? 'good' : 'bad') + '" aria-live="polite"><div class="answer-verdict">' + icon(answer.correct ? 'check' : 'wrong') + (answer.correct ? '回答正确，继续保持' : '这道题还需要巩固') + '</div><div class="answer-values"><span>正确答案：<strong>' + formatAnswer(q, q.answer) + '</strong></span><span>你的答案：<strong>' + formatAnswer(q, answer.selected) + '</strong></span></div>' + (state.settings.analysis ? '<div class="analysis"><strong>题目解析</strong>' + (q.analysis ? esc(q.analysis) : '<span class="muted">原题库未提供解析，你可以在下方记录自己的理解。</span>') + '</div>' : '') + '</div>';
+    if (answer) html += '<div class="answer-panel ' + (answer.correct ? 'good' : 'bad') + '" aria-live="polite"><div class="answer-verdict">' + icon(answer.correct ? 'check' : 'wrong') + (answer.correct ? '回答正确，继续保持' : '这道题还需要巩固') + '</div><div class="answer-values"><span>正确答案：<strong>' + formatAnswer(q, q.answer) + '</strong></span><span>你的答案：<strong>' + formatAnswer(q, answer.selected) + '</strong></span></div>' + (state.settings.analysis ? '<div class="analysis"><strong>题目解析</strong>' + (q.analysis ? esc(q.analysis) : '<span class="muted">原题库未提供解析，你可以在下方记录自己的理解。</span>') + '</div>' : '') + aiExplanationView(b, q, answer.selected) + '</div>';
     html += '<div class="question-footer"><button class="button" data-action="previous" ' + (s.index === 0 ? 'disabled' : '') + '>' + icon('left') + '上一题</button><div class="row">' + (!answer && q.type === '多选题' ? '<button class="button primary" data-action="submit" ' + (!ui.draft.length ? 'disabled' : '') + '>提交答案</button>' : '') + '<button class="button ' + (answer ? 'primary' : '') + '" data-action="next">' + (s.index === s.ids.length - 1 ? '查看本轮小结' : answer ? '下一题' : '暂时跳过') + icon('arrow') + '</button></div></div><div class="question-tools"><button class="tool-button ' + (r.favorite ? 'on' : '') + '" data-action="favorite">' + icon('star') + (r.favorite ? '已收藏' : '收藏题目') + '</button><button class="tool-button ' + (ui.showNote ? 'on' : '') + '" data-action="toggle-note">' + icon('note') + (r.note ? '查看笔记' : '写笔记') + '</button>' + (r.inWrong ? '<button class="tool-button" data-action="remove-wrong-current">' + icon('check') + '移出错题本</button>' : '') + '<span class="muted attempt-count" style="margin-left:auto;font-size:10px"><span>累计作答 </span><strong>' + r.attempts + '</strong><span> 次</span></span></div>';
     if (ui.showNote || (state.settings.notes && r.note)) html += '<div class="note-box"><textarea id="question-note" maxlength="10000" placeholder="写下解题思路，或给未来的自己留一个提醒…" aria-label="本题笔记">' + esc(r.note) + '</textarea><div class="row"><span>保存在本机 · 最多 10,000 字</span><span id="note-status">' + (r.note ? '已保存' : '输入后自动保存') + '</span><button class="button mobile-note-done" data-action="note-done">完成</button></div></div>';
     html += '</article><p class="footer-note">' + icon('shield') + '<span class="save-indicator" role="status">' + esc(saveLabel()) + '</span>' + '</p></div><aside class="practice-aside"><div class="aside-card answer-card"><h3>本轮答题卡<span>' + done + ' / ' + s.ids.length + ' 已答</span></h3><div class="session-mini"><div><strong class="good-text">' + Object.values(s.answers).filter(a => a.correct).length + '</strong><span>答对</span></div><div><strong class="bad-text">' + Object.values(s.answers).filter(a => !a.correct).length + '</strong><span>答错</span></div><div><strong>' + (s.ids.length - done) + '</strong><span>未答</span></div></div>' + answerGrid(s, b) + '<div class="legend"><span><i class="good"></i>本轮答对</span><span><i class="bad"></i>本轮答错</span><span><i class="historical"></i>以前练过</span><span><i></i>从未练过</span></div>' + lifetimeSummary(b, s) + '<div class="focus-actions"><button class="button" data-action="nav" data-view="home">' + icon('left') + '返回题库</button><button class="button" data-action="summary">结束本轮</button></div><p class="focus-save save-indicator" role="status">' + esc(saveLabel()) + '</p></div></aside></div>';
@@ -1268,9 +1296,45 @@ window.TIJIAN_CLOUD_CONFIG = { enabled: false };
     });
   }
   async function choose(label) { const { s, q, answer } = sessionContext(); if (!q || answer) return; if (q.type === '多选题') { ui.draft = ui.draft.includes(label) ? ui.draft.filter(a => a !== label) : [...ui.draft, label]; s.drafts ||= {}; s.drafts[q.id] = [...ui.draft]; s.updatedAt = new Date().toISOString(); await save(); render(); } else { ui.draft = [label]; await submit(); } }
-  async function submit() { const { s, b, q, answer } = sessionContext(); if (!q || answer || !ui.draft.length) return; const selected = [...ui.draft], right = C.correct(q, selected), now = new Date().toISOString(); s.answers[q.id] = { selected, correct: right, at: now }; s.complete = Object.keys(s.answers).length === s.ids.length; delete s.drafts?.[q.id]; s.updatedAt = now; const r = ensureRecord(b, q); r.attempts++; r[right ? 'right' : 'wrong']++; r.lastCorrect = right; if (!right) r.inWrong = true; r.history.push({ at: now, correct: right, selected }); r.history = r.history.slice(-20); state.activity ||= {}; const today = state.activity[dateKey()] ||= { attempts: 0, right: 0 }; today.attempts++; today.right += right ? 1 : 0; await save(); render(); if (mobileScreen.matches) $('.answer-panel')?.scrollIntoView({ block: 'center', behavior: 'auto' }); if (right ? state.settings.autoCorrect : state.settings.autoWrong) { const session = s, current = q.id; clearTimeout(nextTimer); nextTimer = setTimeout(() => { if (ui.view === 'practice' && !$('#overlay').children.length && state.session === session && session.ids[session.index] === current) next().catch(report); }, 1600); } }
+  async function submit() { const { s, b, q, answer } = sessionContext(); if (!q || answer || !ui.draft.length) return; const selected = [...ui.draft], right = C.correct(q, selected), now = new Date().toISOString(); s.answers[q.id] = { selected, correct: right, at: now }; s.complete = Object.keys(s.answers).length === s.ids.length; delete s.drafts?.[q.id]; s.updatedAt = now; const r = ensureRecord(b, q); r.attempts++; r[right ? 'right' : 'wrong']++; r.lastCorrect = right; if (!right) r.inWrong = true; r.history.push({ at: now, correct: right, selected }); r.history = r.history.slice(-20); state.activity ||= {}; const today = state.activity[dateKey()] ||= { attempts: 0, right: 0 }; today.attempts++; today.right += right ? 1 : 0; await save(); render(); if (mobileScreen.matches) $('.answer-panel')?.scrollIntoView({ block: 'center', behavior: 'auto' }); if (right ? state.settings.autoCorrect : state.settings.autoWrong) { const session = s, current = q.id; clearTimeout(nextTimer); nextTimer = setTimeout(() => { if (ui.view === 'practice' && !$('#overlay').children.length && state.session === session && session.ids[session.index] === current) next().catch(report); }, state.settings.autoNextDelay * 1000); } }
   async function navigateQuestion(index) { ui.answerSheet = false; clearTimeout(nextTimer); clearTimeout(noteTimer); if (!state.session) return; state.session.index = Math.max(0, Math.min(index, state.session.ids.length - 1)); ui.draft = [...(state.session.drafts?.[state.session.ids[state.session.index]] || [])]; state.session.updatedAt = new Date().toISOString(); ui.showNote = false; ui.cardPage = Math.floor(state.session.index / 100); await save(); render(); window.scrollTo(0, 0); }
   async function next() { const { s } = sessionContext(); if (!s) return; if (s.index === s.ids.length - 1) { clearTimeout(nextTimer); ui.view = 'complete'; render(); window.scrollTo(0, 0); } else await navigateQuestion(s.index + 1); }
+  const aiSignature = (q, selected) => JSON.stringify([C.signature(q), q.analysis || '', [...selected].sort()]);
+  const aiKey = (b, q, selected) => JSON.stringify([b.id, q.id, aiSignature(q, selected)]);
+  function aiContext() {
+    if (ui.view === 'practice') { const context = sessionContext(); return context.answer ? { ...context, selected: context.answer.selected } : {}; }
+    if (ui.view === 'exam-review') { const exam = currentExam(), q = exam?.questions[ui.examIndex || 0], b = banks().find(b => b.id === exam?.bankId); return q && b ? { b, q, selected: exam.answers[q.id] || [] } : {}; }
+    return {};
+  }
+  function aiExplanationView(b, q, selected) {
+    if (!cloudClient || !b) return '';
+    const id = aiKey(b, q, selected), cached = record(b, q).aiExplanation;
+    const valid = cached?.signature === aiSignature(q, selected) && typeof cached.text === 'string' && !!cached.text.trim() && cached.text.length <= 20000;
+    const open = ui.aiOpen?.[id], pending = aiJob?.owner === localOwner && aiJob.key === id, error = ui.aiErrors?.[id];
+    return '<section class="ai-explanation"><div class="ai-heading"><strong>AI 解析</strong><button class="button" data-action="ai-explain" ' + (open && valid ? 'data-refresh="true" ' : '') + (pending ? 'disabled' : '') + '>' + (pending ? '正在解析…' : open && valid ? '重新生成' : valid ? '查看 AI 解析' : 'AI解析') + '</button></div>' + (pending ? '<p class="ai-status" role="status">正在生成解析，请稍候…</p>' : '') + (error ? '<p class="ai-error" role="alert">' + esc(error) + '</p>' : '') + (open && valid ? '<div class="ai-text">' + esc(cached.text) + '</div><p class="ai-caption">DeepSeek · AI 解析供学习参考，请结合题库答案判断。</p>' : '<p class="ai-caption">点击按钮后生成解题思路和选项分析。</p>') + '</section>';
+  }
+  function updateAIExplanation() {
+    const { b, q, selected } = aiContext(), section = $('.ai-explanation');
+    if (b && q && section) section.outerHTML = aiExplanationView(b, q, selected);
+  }
+  async function explainQuestion(refresh = false) {
+    const { b, q, selected } = aiContext(); if (!b || !q || !cloudClient) return;
+    clearTimeout(nextTimer);
+    const id = aiKey(b, q, selected), sig = aiSignature(q, selected), cached = record(b, q).aiExplanation;
+    ui.aiOpen ||= {}; ui.aiErrors ||= {}; ui.aiOpen[id] = true; delete ui.aiErrors[id];
+    if (!refresh && cached?.signature === sig && typeof cached.text === 'string' && cached.text.trim() && cached.text.length <= 20000) { updateAIExplanation(); return; }
+    if (aiJob?.owner === localOwner) return toast('已有一道题正在生成解析，请稍候。');
+    const job = { owner: localOwner, key: id }; aiJob = job; updateAIExplanation();
+    try {
+      const result = await cloudClient.explain(b.id, q, selected);
+      if (localOwner !== job.owner || accountLocked) return;
+      const liveBank = banks().find(item => item.id === b.id), liveQuestion = liveBank?.questions.find(item => item.id === q.id);
+      if (!liveQuestion || aiSignature(liveQuestion, selected) !== sig) throw new Error('题目已更新，请同步后重新生成解析。');
+      ensureRecord(liveBank, liveQuestion).aiExplanation = { ...result, signature: sig };
+      await save();
+    } catch (error) { if (localOwner === job.owner && !accountLocked) ui.aiErrors[id] = error.message || 'AI 解析失败，请点击重试。'; }
+    finally { if (aiJob === job) aiJob = null; if (localOwner === job.owner && !accountLocked) updateAIExplanation(); }
+  }
   async function toggleFavorite(b, q) { const r = ensureRecord(b, q); r.favorite = !r.favorite; await save(); render(); toast(r.favorite ? '已加入收藏。' : '已取消收藏。'); }
   const examAnswered = exam => Object.values(exam.answers).filter(a => a.length).length;
   const examTime = seconds => { seconds = Math.max(0, Math.ceil(seconds)); return String(Math.floor(seconds / 3600)).padStart(2, '0') + ':' + String(Math.floor(seconds / 60) % 60).padStart(2, '0') + ':' + String(seconds % 60).padStart(2, '0'); };
@@ -1323,7 +1387,7 @@ window.TIJIAN_CLOUD_CONFIG = { enabled: false };
     let html = '<div class="practice-layout exam-layout"><article class="question-card"><div class="question-meta"><span class="chapter" title="' + esc(exam.bankName) + '">' + esc(q.chapter.replaceAll('/', ' / ')) + '</span><span class="question-count"><strong>' + (index + 1) + '</strong> / ' + exam.questions.length + '</span></div><div class="question-labels"><span class="chip green">' + q.type + '</span><span class="history-badge">' + (review ? '考后回顾' : '模拟考试 · 交卷后判分') + '</span></div><h2 class="question-text">' + esc(q.text) + '</h2><p class="question-instruction">' + (review ? '查看本次考试的答案与解析。' : q.type === '多选题' ? '选择所有正确选项，选择后自动保存，可随时修改。' : '选择一个答案，选择后自动保存，可随时修改。') + '</p><div class="options" role="group" aria-label="考试选项">';
     for (const o of q.options) html += '<button class="option ' + (q.type === '多选题' ? 'multiple ' : '') + (selected.includes(o.label) ? 'selected ' : '') + (review && q.answer.includes(o.label) ? 'correct ' : '') + (review && selected.includes(o.label) && !q.answer.includes(o.label) ? 'incorrect ' : '') + '" data-action="exam-choose" data-label="' + o.label + '" aria-pressed="' + selected.includes(o.label) + '" ' + (review ? 'disabled' : '') + '><span class="option-letter">' + o.label + '</span><span class="option-content">' + esc(o.text) + '</span></button>';
     html += '</div>';
-    if (review) html += '<div class="answer-panel ' + (right ? 'good' : 'bad') + '"><div class="answer-verdict">' + icon(right ? 'check' : 'wrong') + (right ? '回答正确' : selected.length ? '回答错误' : '本题未作答') + '</div><div class="answer-values"><span>正确答案：<strong>' + formatAnswer(q, q.answer) + '</strong></span><span>你的答案：<strong>' + (selected.length ? formatAnswer(q, selected) : '未作答') + '</strong></span></div><div class="analysis"><strong>题目解析</strong>' + (q.analysis ? esc(q.analysis) : '原题库未提供解析。') + '</div></div>';
+    if (review) html += '<div class="answer-panel ' + (right ? 'good' : 'bad') + '"><div class="answer-verdict">' + icon(right ? 'check' : 'wrong') + (right ? '回答正确' : selected.length ? '回答错误' : '本题未作答') + '</div><div class="answer-values"><span>正确答案：<strong>' + formatAnswer(q, q.answer) + '</strong></span><span>你的答案：<strong>' + (selected.length ? formatAnswer(q, selected) : '未作答') + '</strong></span></div><div class="analysis"><strong>题目解析</strong>' + (q.analysis ? esc(q.analysis) : '原题库未提供解析。') + '</div>' + aiExplanationView(banks().find(b => b.id === exam.bankId), q, selected) + '</div>';
     html += '<div class="question-footer"><button class="button" data-action="exam-prev" ' + (position <= 0 ? 'disabled' : '') + '>' + icon('left') + '上一题</button><button class="button primary" data-action="exam-next">' + (position === indices.length - 1 ? review ? '返回成绩' : '检查并交卷' : '下一题') + icon('arrow') + '</button></div>';
     if (!review) html += '<div class="question-tools"><button class="tool-button ' + (exam.marked[q.id] ? 'on' : '') + '" data-action="exam-mark">' + icon('star') + (exam.marked[q.id] ? '已标记待检查' : '标记待检查') + '</button><button class="tool-button" data-action="exam-clear" ' + (!selected.length ? 'disabled' : '') + '>' + icon('refresh') + '清空本题答案</button><button class="tool-button exam-hand-in" data-action="exam-submit">' + icon('check') + '交卷</button></div>';
     html += '</article><aside class="practice-aside"><div class="aside-card answer-card">';
@@ -1392,7 +1456,10 @@ window.TIJIAN_CLOUD_CONFIG = { enabled: false };
     return pageHead('EXAM RESULT', '考试成绩', esc(exam.bankName), '<button class="button" data-action="nav" data-view="exams">考试记录</button>') + '<section class="exam-result-card"><div class="eyebrow">' + (exam.autoSubmitted ? '考试到时 · 自动交卷' : '考试完成') + '</div><div class="exam-score ' + (r.passed ? 'good-text' : 'bad-text') + '">' + r.score + '<small>/ 100</small></div><h2>' + (r.passed ? '本次考试及格' : '继续巩固，下次进步') + '</h2><p class="help">及格线 ' + exam.passScore + ' 分 · 用时 ' + examTime(elapsed) + ' · ' + new Date(exam.finishedAt).toLocaleString('zh-CN') + '</p><div class="complete-stats"><div><strong class="good-text">' + r.right + '</strong><span>答对</span></div><div><strong class="bad-text">' + r.wrong + '</strong><span>答错</span></div><div><strong>' + r.unanswered + '</strong><span>未答</span></div></div><div class="exam-breakdown">' + C.TYPES.filter(type => r.byType[type].total).map(type => '<div><strong>' + type + '</strong><span>' + r.byType[type].total + ' 道</span><span>答对 ' + r.byType[type].right + ' · 答错 ' + r.byType[type].wrong + ' · 未答 ' + r.byType[type].unanswered + '</span></div>').join('') + '</div><p class="help exam-result-note">答错与未答题已加入错题本；已答题计入学习记录。每题等分，多选题全部选对才得分。</p><div class="exam-result-actions"><button class="button primary" data-action="exam-review" data-filter="">查看整卷解析</button><button class="button" data-action="exam-review" data-filter="wrong" ' + (!(r.wrong + r.unanswered) ? 'disabled' : '') + '>查看错题与未答</button><button class="button" data-action="nav" data-view="home">返回题库</button></div></section>';
   }
 
-  function settingsDialog() { const s = state.settings; modal('刷题设置', (ui.view === 'practice' ? '<div class="setting-row"><div><strong>当前练习进度</strong><p>已自动保存，重新进入会回到当前位置。</p></div><button class="button" data-action="restart-practice">重新练习</button></div>' + (['chapter', 'random', 'type', 'custom'].includes(state.session.mode) && !state.session.filters.scope ? '<button class="text-button" data-action="configure-mode" data-mode="' + state.session.mode + '">' + (state.session.mode === 'chapter' ? '选择章节' : '调整练习范围') + '</button>' : '') : '') + (cloud ? '<button class="account-setting" data-action="account"><strong>' + accountName() + ' · 账号与同步</strong><span class="cloud-status">' + cloudLabel() + '</span>' + icon('chevron') + '</button>' : '') + '<div class="setting-row theme-setting"><strong>界面主题</strong><p>为专注选择合适的背景</p><div class="theme-options">' + C.THEMES.map(([value, name]) => '<button class="theme-choice ' + (s.theme === value ? 'active' : '') + '" data-action="setting-theme" data-value="' + value + '" aria-pressed="' + (s.theme === value) + '"><span class="theme-swatch" data-palette="' + value + '" aria-hidden="true"></span>' + name + '</button>').join('') + '</div></div><div class="setting-row"><div><strong>题目字号</strong><p>同时调整题干与选项</p></div><div class="segment">' + [[16, '小'], [18, '中'], [20, '大'], [23, '特大']].map(([value, name]) => '<button class="' + (Number(s.font) === value ? 'active' : '') + '" data-action="setting-font" data-value="' + value + '">' + name + '</button>').join('') + '</div></div>' + [['autoCorrect', '答对自动下一题', '显示结果约 1.6 秒后切换'], ['autoWrong', '答错自动下一题', '建议关闭，留出时间理解错题'], ['analysis', '答题后显示解析', '提交前始终隐藏答案与解析'], ['notes', '显示已有笔记', '也可以在题目下方手动打开']].map(([key, title, description]) => '<label class="setting-row"><span><strong>' + title + '</strong><p>' + description + '</p></span><input class="toggle" type="checkbox" data-setting="' + key + '" ' + (s[key] ? 'checked' : '') + ' aria-label="' + title + '"></label>').join(''), (['practice', 'exam', 'exam-review'].includes(ui.view) && !desktopCard.matches ? '<button class="button" data-action="settings-card">打开答题卡</button>' : '') + '<button class="button primary" data-action="close-modal">完成</button>'); }
+  function autoNextDelaySetting() {
+    return '<div class="setting-row"><label for="auto-next-delay"><strong>自动下一题等待时间</strong><p>答对、答错自动翻题共用，支持 0–60 秒。</p></label><div class="auto-next-control"><input id="auto-next-delay" class="field-control" type="number" inputmode="decimal" min="0" max="60" step="any" value="' + esc(state.settings.autoNextDelay) + '" aria-label="自动下一题等待时间（秒）"><span>秒</span></div></div>';
+  }
+  function settingsDialog() { const s = state.settings; modal('刷题设置', (ui.view === 'practice' ? '<div class="setting-row"><div><strong>当前练习进度</strong><p>已自动保存，重新进入会回到当前位置。</p></div><button class="button" data-action="restart-practice">重新练习</button></div>' + (['chapter', 'random', 'type', 'custom'].includes(state.session.mode) && !state.session.filters.scope ? '<button class="text-button" data-action="configure-mode" data-mode="' + state.session.mode + '">' + (state.session.mode === 'chapter' ? '选择章节' : '调整练习范围') + '</button>' : '') : '') + (cloud ? '<button class="account-setting" data-action="account"><strong>' + accountName() + ' · 账号与同步</strong><span class="cloud-status">' + cloudLabel() + '</span>' + icon('chevron') + '</button>' : '') + '<div class="setting-row theme-setting"><strong>界面主题</strong><p>为专注选择合适的背景</p><div class="theme-options">' + C.THEMES.map(([value, name]) => '<button class="theme-choice ' + (s.theme === value ? 'active' : '') + '" data-action="setting-theme" data-value="' + value + '" aria-pressed="' + (s.theme === value) + '"><span class="theme-swatch" data-palette="' + value + '" aria-hidden="true"></span>' + name + '</button>').join('') + '</div></div><div class="setting-row"><div><strong>题目字号</strong><p>同时调整题干与选项</p></div><div class="segment">' + [[16, '小'], [18, '中'], [20, '大'], [23, '特大']].map(([value, name]) => '<button class="' + (Number(s.font) === value ? 'active' : '') + '" data-action="setting-font" data-value="' + value + '">' + name + '</button>').join('') + '</div></div>' + [['autoCorrect', '答对自动下一题', '答对后按下方设置的时间切换'], ['autoWrong', '答错自动下一题', '建议关闭，留出时间理解错题'], ['analysis', '答题后显示解析', '提交前始终隐藏答案与解析'], ['notes', '显示已有笔记', '也可以在题目下方手动打开']].map(([key, title, description]) => '<label class="setting-row"><span><strong>' + title + '</strong><p>' + description + '</p></span><input class="toggle" type="checkbox" data-setting="' + key + '" ' + (s[key] ? 'checked' : '') + ' aria-label="' + title + '"></label>' + (key === 'autoWrong' ? autoNextDelaySetting() : '')).join(''), (['practice', 'exam', 'exam-review'].includes(ui.view) && !desktopCard.matches ? '<button class="button" data-action="settings-card">打开答题卡</button>' : '') + '<button class="button primary" data-action="close-modal">完成</button>'); }
   function download(content, type, name) { const url = URL.createObjectURL(new Blob([content], { type })); const a = document.createElement('a'); a.href = url; a.download = name; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 10000); }
   async function restore(file) {
     if (!file) return;
@@ -1481,6 +1548,7 @@ window.TIJIAN_CLOUD_CONFIG = { enabled: false };
       case 'start-configured': await startMode(el.dataset.mode, { chapter: $('#mode-chapter').value, type: $('#mode-type').value, status: $('#mode-status').value, count: $('#mode-count') ? Number($('#mode-count').value) : undefined }); break;
       case 'choose': await choose(el.dataset.label); break;
       case 'submit': await submit(); break;
+      case 'ai-explain': await explainQuestion(el.dataset.refresh === 'true'); break;
       case 'next': await next(); break;
       case 'previous': await navigateQuestion(state.session.index - 1); break;
       case 'jump': await navigateQuestion(Number(el.dataset.index)); break;
@@ -1596,6 +1664,11 @@ window.TIJIAN_CLOUD_CONFIG = { enabled: false };
       else if (['mode-chapter', 'mode-type', 'mode-status'].includes(el.id)) updateModeProgress();
       else if (el.id === 'collection-type') { ui.type = el.value; ui.listPage = 0; render(); }
       else if (el.id === 'skip-invalid') { captureImport(); importPreview(); }
+      else if (el.id === 'auto-next-delay') {
+        const seconds = Number(el.value);
+        if (!el.value.trim() || !Number.isFinite(seconds) || seconds < 0 || seconds > 60) { el.value = state.settings.autoNextDelay; return toast('请输入 0–60 秒的等待时间，可以填写小数。'); }
+        state.settings.autoNextDelay = seconds; clearTimeout(nextTimer); await save();
+      }
       else if (el.dataset.setting) { state.settings[el.dataset.setting] = el.checked; await save(); render(); }
     })().catch(report);
   });

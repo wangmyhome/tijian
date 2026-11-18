@@ -1,0 +1,6 @@
+project_id = "tijian"
+
+[functions.ai-explain]
+# The function validates the current user through Supabase Auth itself.
+verify_jwt = false
+entrypoint = "./functions/ai-explain/index.ts"
