@@ -87,3 +87,19 @@ test('authentication stores tokens but never persists the supplied password; ref
   await Promise.all([client.token(), client.token()]); assert.equal(refreshes, 1);
   await client.logout(); assert.equal(memory.size, 0);
 });
+
+test('a refresh finishing after account switching cannot restore the previous account', async () => {
+  const memory = new Map(), storage = { getItem: k => memory.get(k), setItem: (k, v) => memory.set(k, v), removeItem: k => memory.delete(k) };
+  let finish;
+  const client = new Client({ url: 'https://example.supabase.co', key: 'public', adminEmail: 'admin@tijian.local' }, { storage, fetch: async () => {
+    await new Promise(resolve => { finish = resolve; });
+    return { ok: true, json: async () => ({ access_token: 'new-admin-token', refresh_token: 'new-refresh', expires_at: 9999999999, user: { id: 'admin-id', email: 'admin@tijian.local' } }) };
+  } });
+  client.remember({ access_token: 'old', refresh_token: 'old-refresh', expires_at: 1, user: { id: 'admin-id', email: 'admin@tijian.local' } });
+  const refreshing = client.token();
+  while (!finish) await new Promise(resolve => setImmediate(resolve));
+  const learner = { access_token: 'learner', refresh_token: 'learner-refresh', user: { id: 'learner-id', email: '10001@tijian.local' } };
+  storage.setItem(client.key, JSON.stringify(learner)); finish();
+  await assert.rejects(refreshing, /账号已退出或切换/);
+  assert.equal(JSON.parse(storage.getItem(client.key)).user.id, 'learner-id');
+});

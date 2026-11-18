@@ -38,6 +38,13 @@
   const modes = { sequential: '顺序练习', random: '随机练习', wrong: '错题重练', favorite: '收藏练习', chapter: '章节练习', type: '题型练习', custom: '专项练习' };
   const defaultSettings = { theme: 'system', font: 18, autoCorrect: false, autoWrong: false, analysis: true, notes: true };
   const cloudConfig = window.TIJIAN_CLOUD_CONFIG || { enabled: false };
+  const cloudClient = cloudConfig.enabled ? new window.QuizCloud.Client(cloudConfig) : null;
+  let localOwner = '';
+  const localKey = key => cloudConfig.enabled && localOwner ? 'account:' + localOwner + ':' + key : key;
+  const canManageBanks = () => !cloudConfig.enabled || !!cloudClient?.isAdmin;
+  const accountName = () => esc(cloudClient?.username || '');
+  const bankActions = new Set(['import', 'choose-csv', 'rename-bank', 'save-bank-name', 'delete-bank', 'preview-prev', 'preview-next', 'edit-import', 'delete-import', 'cancel-edit', 'add-option', 'remove-option', 'save-edit', 'confirm-import', 'template']);
+  function requireBankAdmin() { if (!canManageBanks()) throw new Error('只有管理员可以上传、修改或删除共享题库。'); }
   let cloud = null, cloudMeta = {}, syncBackups = [], accountLocked = !!cloudConfig.enabled, accountBusy = false, loginError = '';
   let db, state, saveQueue = Promise.resolve(), storageOK = true, storageError = '';
   let ui = { view: 'home', bankId: '', query: '', type: '', chapter: '', listPage: 0, draft: [], showNote: false, cardPage: 0, sessionBankId: '', lastFocus: null };
@@ -52,11 +59,12 @@
   function persistLocal() {
     const snapshot = structuredClone(state);
     const metaSnapshot = structuredClone(cloudMeta);
+    const mainKey = localKey('main'), metaKey = localKey('cloud-meta'), owner = localOwner;
     snapshot.savedAt = new Date().toISOString();
     saveQueue = saveQueue.catch(() => {}).then(() => new Promise((resolve, reject) => {
       if (!db) { storageOK = false; updateSaveIndicators(); reject(new Error('本地存储暂不可用，请立即导出备份以保留本次记录。')); return; }
-      const tx = db.transaction('workspace', 'readwrite'); tx.objectStore('workspace').put(snapshot, 'main'); tx.objectStore('workspace').put(metaSnapshot, 'cloud-meta');
-      tx.oncomplete = () => { state.savedAt = snapshot.savedAt; storageOK = true; storageError = ''; updateSaveIndicators(); resolve(); };
+      const tx = db.transaction('workspace', 'readwrite'); tx.objectStore('workspace').put(snapshot, mainKey); tx.objectStore('workspace').put(metaSnapshot, metaKey);
+      tx.oncomplete = () => { if (localOwner === owner) state.savedAt = snapshot.savedAt; storageOK = true; storageError = ''; updateSaveIndicators(); resolve(); };
       tx.onerror = tx.onabort = () => { storageOK = false; storageError = '保存失败，请导出备份'; updateSaveIndicators(); reject(new Error('本地保存失败，请到“数据与备份”导出完整备份。')); };
     }));
     return saveQueue;
@@ -76,7 +84,9 @@
   async function signIn(username, password) {
     accountBusy = true; loginError = ''; loginView();
     try {
+      await cloud.running;
       await cloud.client.login(username, password);
+      await loadAccount(cloud.client.session.user);
       cloud.stopped = false; cloud.conflict = null; accountLocked = false;
       ui.view = 'home'; await cloud.run();
       if (!accountLocked) { render(); examTick(); if (cloud.conflict) accountDialog(); }
@@ -90,7 +100,7 @@
   function accountDialog() {
     if (!cloud) return;
     const conflict = cloud.conflict;
-    const body = '<div class="account-summary"><div class="avatar">我</div><div><strong>admin</strong><p class="cloud-status">' + cloudLabel() + '</p></div></div><p class="help">题库、练习进度、错题、收藏、笔记和考试记录会在登录的设备之间同步。</p><p class="cloud-message help"></p>' + (conflict ? '<div class="sync-conflict"><h3>请选择要继续使用的数据</h3><p>' + esc(conflict.message) + '</p><div><strong>本机</strong><span>' + snapshotSummary(state) + '</span><button class="button" data-action="sync-local">使用本机并上传</button></div><div><strong>云端</strong><span>' + snapshotSummary(conflict.remote.payload) + '</span><button class="button primary" data-action="sync-remote">使用云端数据</button></div><p>另一份数据可在“数据与备份”中导出。</p></div>' : '') + (syncBackups.length ? '<button class="text-button" data-action="sync-backups">查看同步前备份（' + syncBackups.length + ' 份）</button>' : '');
+    const body = '<div class="account-summary"><div class="avatar">我</div><div><strong>' + accountName() + ' · ' + (canManageBanks() ? '管理员' : '刷题账号') + '</strong><p class="cloud-status">' + cloudLabel() + '</p></div></div><p class="help">' + (canManageBanks() ? '管理所有账号共用的题库。' : '使用管理员维护的共享题库。') + '练习进度、错题、收藏、笔记和考试记录仅属于当前账号。</p><p class="cloud-message help"></p>' + (conflict ? '<div class="sync-conflict"><h3>请选择要继续使用的数据</h3><p>' + esc(conflict.message) + '</p><div><strong>本机</strong><span>' + snapshotSummary(state) + '</span><button class="button" data-action="sync-local">使用本机并上传</button></div><div><strong>云端</strong><span>' + snapshotSummary(conflict.remote.payload) + '</span><button class="button primary" data-action="sync-remote">使用云端数据</button></div><p>另一份数据可在“数据与备份”中导出。</p></div>' : '') + (syncBackups.length ? '<button class="text-button" data-action="sync-backups">查看同步前备份（' + syncBackups.length + ' 份）</button>' : '');
     modal('账号与同步', body, '<button class="button" data-action="account-logout">' + (cloudMeta.dirty ? '保存本机并退出' : '退出登录') + '</button><button class="button primary" data-action="sync-now" ' + (conflict ? 'disabled' : '') + '>立即同步</button>');
     updateCloudUI();
   }
@@ -99,7 +109,7 @@
     const next = [...syncBackups, { id: uid(), at, label: '同步前 · 本机', payload: structuredClone(local) }, ...(remote ? [{ id: uid(), at, label: '同步前 · 云端', payload: structuredClone(remote) }] : [])].slice(-8);
     await new Promise((resolve, reject) => {
       if (!db) return reject(new Error('无法保存同步前备份，请先导出本机记录。'));
-      const tx = db.transaction('workspace', 'readwrite'); tx.objectStore('workspace').put(next, 'sync-backups');
+      const tx = db.transaction('workspace', 'readwrite'); tx.objectStore('workspace').put(next, localKey('sync-backups'));
       tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(new Error('备份保存失败，同步已暂停。'));
     });
     syncBackups = next;
@@ -108,13 +118,14 @@
   async function applyCloud(payload, meta) {
     state = structuredClone(payload); state.settings = { ...defaultSettings, ...state.settings }; state.exams ||= []; state.activeExam ||= null;
     cloudMeta = meta; state.session = sanitizeSession(state.session);
-    ui.bankId = state.selectedBank || banks()[0]?.id || ''; ui.draft = []; ui.showNote = false;
+    if (!banks().some(b => b.id === state.selectedBank)) state.selectedBank = banks()[0]?.id || '';
+    ui.bankId = state.selectedBank; ui.draft = []; ui.showNote = false;
     await persistLocal(); render();
   }
   function initCloud() {
     if (!cloudConfig.enabled) return;
     cloud = new window.QuizCloud.Sync({
-      client: new window.QuizCloud.Client(cloudConfig), getState: () => state, getMeta: () => cloudMeta,
+      client: cloudClient, getState: () => state, getMeta: () => cloudMeta,
       validate: C.validateState, persist: persistLocal, archive: archiveSync, apply: applyCloud, canApply: canApplyCloud,
       hasLocalData: () => !!(Object.keys(state.records).length || state.session || state.activeExam || state.exams.length || state.banks.length > 1 || state.banks.some(b => b.id !== 'builtin-theory' || b.name !== '计算机程序设计员 · 三级')),
       onStatus: updateCloudUI, onAuthRequired: () => { accountLocked = true; loginError = '登录已过期，请重新登录。本机记录已保留。'; closeModal(); render(); }
@@ -124,7 +135,10 @@
     const retry = () => { if (!accountLocked && !document.hidden) cloud.run(); };
     window.addEventListener('online', retry); window.addEventListener('focus', retry); document.addEventListener('visibilitychange', retry);
     window.addEventListener('storage', event => {
-      if (event.key === cloud.client.key && !event.newValue) { cloud.client.session = null; cloud.stop(); accountLocked = true; closeModal(); render(); }
+      if (event.key === cloud.client.key) {
+        let next; try { next = JSON.parse(event.newValue); } catch (_) {}
+        if (!next || next.user?.id !== cloud.client.session?.user.id) { cloud.client.session = null; cloud.stop(); accountLocked = true; clearTimeout(nextTimer); clearTimeout(noteTimer); closeModal(); render(); }
+      }
     });
   }
   const banks = () => state.banks;
@@ -147,14 +161,15 @@
     document.body.classList.remove('editing-note');
     document.body.classList.toggle('focus-mode', ['practice', 'exam', 'exam-review'].includes(ui.view));
     const c = counts(), title = { home: '我的题库', history: '学习记录', wrong: '错题本', favorite: '我的收藏', manage: '数据与备份', search: '搜索题目', practice: '开始练习', more: '我的', complete: '练习小结', exams: '模拟考试', exam: '模拟考试', 'exam-result': '考试成绩', 'exam-review': '试卷回顾' }[ui.view];
-    $('#app').innerHTML = '<div class="app-shell"><aside class="sidebar"><div class="brand"><div class="brand-mark">间</div><div><div class="brand-name">题间</div><small>MAKE IT COUNT</small></div></div><div class="nav-label">学习空间</div><nav class="nav" aria-label="主导航">' + navButton('home', 'grid', '我的题库') + navButton('exams', 'clock', '模拟考试') + navButton('history', 'clock', '学习记录') + navButton('wrong', 'wrong', '错题本', c.wrong || '') + navButton('favorite', 'star', '我的收藏', c.favorite || '') + '</nav><div class="nav-divider"></div><div class="nav-label">工具</div><nav class="nav">' + navButton('manage', 'shield', '数据与备份') + '<button class="nav-button" data-action="template">' + icon('download') + '<span>下载题库模板</span></button></nav><div class="sidebar-foot"><div class="local-status"><i class="status-dot"></i>' + '<span class="save-indicator" role="status">' + esc(saveLabel()) + '</span>' + '</div><p>' + (storageError || (cloud ? '登录 admin · <span class="cloud-status">' + cloudLabel() + '</span>' : '专注当下的每一道题。<br>数据保存在当前浏览器中。')) + '</p><div class="profile"><div class="avatar">我</div><div><strong>我的学习空间</strong><small>' + (cloud ? '云端同步版' : '个人离线版') + '</small></div><button class="icon-button" title="刷题设置" aria-label="刷题设置" data-action="settings">' + icon('settings') + '</button></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumb">学习空间 <span>/</span><strong>' + title + '</strong></div><div class="top-actions"><span class="top-date">' + new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }) + '</span>' + (cloud ? '<button class="button account-button" data-action="account" aria-label="账号与同步">' + icon('shield') + '<span>admin</span></button>' : '') + '<button class="icon-button" title="刷题设置" aria-label="刷题设置" data-action="settings">' + icon('settings') + '</button><button class="button primary" data-action="import">' + icon('plus') + '导入题库</button></div></header><div class="content">' + (ui.view === 'more' ? moreView() : ui.view === 'exams' ? examsView() : ui.view === 'exam' ? examView() : ui.view === 'exam-review' ? examView(true) : ui.view === 'exam-result' ? examResultView() : ui.view === 'home' ? home() : ui.view === 'practice' ? practice() : ui.view === 'complete' ? complete() : ui.view === 'manage' ? manage() : ui.view === 'history' ? history() : collection()) + '</div></main></div>';
+    $('#app').innerHTML = '<div class="app-shell"><aside class="sidebar"><div class="brand"><div class="brand-mark">间</div><div><div class="brand-name">题间</div><small>MAKE IT COUNT</small></div></div><div class="nav-label">学习空间</div><nav class="nav" aria-label="主导航">' + navButton('home', 'grid', '我的题库') + navButton('exams', 'clock', '模拟考试') + navButton('history', 'clock', '学习记录') + navButton('wrong', 'wrong', '错题本', c.wrong || '') + navButton('favorite', 'star', '我的收藏', c.favorite || '') + '</nav><div class="nav-divider"></div><div class="nav-label">工具</div><nav class="nav">' + navButton('manage', 'shield', '数据与备份') + '<button class="nav-button" data-action="template">' + icon('download') + '<span>下载题库模板</span></button></nav><div class="sidebar-foot"><div class="local-status"><i class="status-dot"></i>' + '<span class="save-indicator" role="status">' + esc(saveLabel()) + '</span>' + '</div><p>' + (storageError || (cloud ? '登录 ' + accountName() + ' · <span class="cloud-status">' + cloudLabel() + '</span>' : '专注当下的每一道题。<br>数据保存在当前浏览器中。')) + '</p><div class="profile"><div class="avatar">我</div><div><strong>我的学习空间</strong><small>' + (cloud ? '云端同步版' : '个人离线版') + '</small></div><button class="icon-button" title="刷题设置" aria-label="刷题设置" data-action="settings">' + icon('settings') + '</button></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumb">学习空间 <span>/</span><strong>' + title + '</strong></div><div class="top-actions"><span class="top-date">' + new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }) + '</span>' + (cloud ? '<button class="button account-button" data-action="account" aria-label="账号与同步">' + icon('shield') + '<span>' + accountName() + '</span></button>' : '') + '<button class="icon-button" title="刷题设置" aria-label="刷题设置" data-action="settings">' + icon('settings') + '</button><button class="button primary" data-action="import">' + icon('plus') + '导入题库</button></div></header><div class="content">' + (ui.view === 'more' ? moreView() : ui.view === 'exams' ? examsView() : ui.view === 'exam' ? examView() : ui.view === 'exam-review' ? examView(true) : ui.view === 'exam-result' ? examResultView() : ui.view === 'home' ? home() : ui.view === 'practice' ? practice() : ui.view === 'complete' ? complete() : ui.view === 'manage' ? manage() : ui.view === 'history' ? history() : collection()) + '</div></main></div>';
     syncMobileUI(); updateCloudUI();
+    if (!canManageBanks()) document.querySelectorAll('[data-action]').forEach(el => { if (bankActions.has(el.dataset.action)) el.remove(); });
     if (cloud?.status === 'remote' && canApplyCloud()) cloud.schedule(0);
   }
   const mobileScreen = matchMedia('(max-width: 650px), (max-width: 950px) and (max-height: 500px) and (pointer: coarse)');
   const desktopCard = matchMedia('(min-width: 1000px)');
   function moreView() {
-    return pageHead('MY STUDY SPACE', '我的', '学习记录、数据备份与个性设置。') + '<div class="mobile-profile"><div class="avatar">我</div><div><strong>我的学习空间</strong><span>' + (cloud ? 'admin · <span class="cloud-status">' + cloudLabel() + '</span>' : '个人离线版 · 数据保存在当前设备') + '</span></div></div><div class="more-links">' + (cloud ? '<button data-action="account">' + icon('shield') + '<span><strong>账号与同步</strong><small class="cloud-status">' + cloudLabel() + '</small></span>' + icon('chevron') + '</button>' : '') + [['history', 'bars', '学习记录', '查看每日练习与累计成绩'], ['favorite', 'star', '我的收藏', '反复回顾值得记住的题目'], ['manage', 'shield', '数据与备份', '导出、恢复和跨设备迁移']].map(([view, glyph, title, detail]) => '<button data-action="nav" data-view="' + view + '">' + icon(glyph) + '<span><strong>' + title + '</strong><small>' + detail + '</small></span>' + icon('chevron') + '</button>').join('') + '<button data-action="settings">' + icon('settings') + '<span><strong>刷题设置</strong><small>主题、字号与作答习惯</small></span>' + icon('chevron') + '</button><button data-action="template">' + icon('download') + '<span><strong>下载题库模板</strong><small>支持单选、多选、判断与任意数量选项</small></span>' + icon('chevron') + '</button></div><p class="footer-note"><span class="save-indicator" role="status">' + esc(saveLabel()) + '</span></p>';
+    return pageHead('MY STUDY SPACE', '我的', '学习记录、数据备份与个性设置。') + '<div class="mobile-profile"><div class="avatar">我</div><div><strong>我的学习空间</strong><span>' + (cloud ? accountName() + ' · <span class="cloud-status">' + cloudLabel() + '</span>' : '个人离线版 · 数据保存在当前设备') + '</span></div></div><div class="more-links">' + (cloud ? '<button data-action="account">' + icon('shield') + '<span><strong>账号与同步</strong><small class="cloud-status">' + cloudLabel() + '</small></span>' + icon('chevron') + '</button>' : '') + [['history', 'bars', '学习记录', '查看每日练习与累计成绩'], ['favorite', 'star', '我的收藏', '反复回顾值得记住的题目'], ['manage', 'shield', '数据与备份', '导出、恢复和跨设备迁移']].map(([view, glyph, title, detail]) => '<button data-action="nav" data-view="' + view + '">' + icon(glyph) + '<span><strong>' + title + '</strong><small>' + detail + '</small></span>' + icon('chevron') + '</button>').join('') + '<button data-action="settings">' + icon('settings') + '<span><strong>刷题设置</strong><small>主题、字号与作答习惯</small></span>' + icon('chevron') + '</button><button data-action="template">' + icon('download') + '<span><strong>下载题库模板</strong><small>支持单选、多选、判断与任意数量选项</small></span>' + icon('chevron') + '</button></div><p class="footer-note"><span class="save-indicator" role="status">' + esc(saveLabel()) + '</span></p>';
   }
   function mobileNavigation() {
     const active = ['history', 'manage', 'more'].includes(ui.view) ? 'more' : ui.view;
@@ -206,7 +221,7 @@
     const c = counts(), b = bank();
     let html = pageHead('YOUR STUDY, YOUR PACE', '我的题库', '从上次停下的地方，继续前进。', '<button class="button" data-action="search-view">' + icon('search') + '搜索题目</button>');
     html += '<div class="stats">' + stat('book', '我的题库', banks().length, '个') + stat('list', '题目总数', c.total.toLocaleString(), '道') + stat('check', '已练题目', c.done.toLocaleString(), '道') + stat('bars', '累计正确率', c.rate) + '</div>';
-    if (!b) return html + empty('你的第一本题库，从这里开始', '导入 CSV 文件，即可开始练习。', '<button class="button primary" data-action="import">' + icon('upload') + '导入题库</button>');
+    if (!b) return html + (canManageBanks() ? empty('你的第一本题库，从这里开始', '导入 CSV 文件，即可开始练习。', '<button class="button primary" data-action="import">' + icon('upload') + '导入题库</button>') : empty('暂无共享题库', '管理员上传并同步题库后，就可以开始练习。'));
     const bc = counts([b]), chapterCount = new Set(b.questions.map(q => q.chapter.split('/')[0])).size;
     const session = state.session, canContinue = session && session.bankId === b.id && !session.complete;
     html += '<div class="dashboard-grid"><section><div class="section-heading"><h2>继续学习</h2><select class="field-control" id="home-bank" aria-label="选择当前题库" style="max-width:260px;padding:6px 9px;font-size:11px">' + bankOptions(b.id) + '</select></div><div class="hero"><div class="hero-label">' + icon('book') + (canContinue ? '上次练习 · ' + modes[session.mode] : '你的专属练习题库') + '</div><h2>' + esc(b.name) + '</h2><div class="hero-meta"><span>' + b.questions.length.toLocaleString() + ' 道题目</span><span>' + chapterCount + ' 个章节</span><span>单选 / 多选 / 判断</span></div><div class="hero-footer"><div class="hero-progress"><div class="row"><span>整体练习进度</span><strong>' + bc.done + ' / ' + bc.total + '</strong></div><div class="progress-track"><div class="progress-fill" style="width:' + (bc.total ? bc.done / bc.total * 100 : 0) + '%"></div></div></div><button class="button" data-action="continue">' + (canContinue ? '继续练习' : '开始练习') + icon('arrow') + '</button></div></div><div class="section-heading practice-label"><h2>选择练习方式</h2><span>按自己的节奏，逐题掌握</span></div><div class="modes">';
@@ -214,7 +229,7 @@
     html += '</div>' + (state.activeExam ? '<div class="exam-resume-banner"><div><strong>模拟考试进行中</strong><span>已答 ' + examAnswered(state.activeExam) + ' / ' + state.activeExam.questions.length + ' 道 · 剩余 <span class="exam-clock" role="timer">' + examTime(examRemaining(state.activeExam)) + '</span></span></div><button class="button primary" data-action="exam-resume">继续考试</button></div>' : '') + '</section><aside class="dashboard-aside">' + weekly() + '<div class="aside-card"><h3>温故知新</h3><button class="quick-link" data-action="nav" data-view="wrong">' + icon('wrong') + '我的错题<strong>' + c.wrong + '</strong>' + icon('chevron') + '</button><button class="quick-link" data-action="nav" data-view="favorite">' + icon('star') + '我的收藏<strong>' + c.favorite + '</strong>' + icon('chevron') + '</button></div><div class="tip"><strong>' + icon('info') + '给专注留一点空间</strong>选项支持键盘 <span class="kbd">A–Z</span> 选择；<span class="kbd">Enter</span> 提交或下一题。答错后停一停，看懂比刷快更重要。</div></aside></div><section class="library-section"><div class="section-heading"><h2>全部题库 <span style="margin-left:8px">' + banks().length + '</span></h2><label class="search">' + icon('search') + '<input id="bank-search" type="search" placeholder="搜索题库名称…" aria-label="搜索题库"></label></div><div class="bank-list" id="bank-list">' + bankRows('') + '</div></section><p class="footer-note">' + icon('shield') + '无需联网，安心练习。记得定期导出备份。</p>';
     return html;
   }
-  function bankRows(query) { const list = banks().filter(b => b.name.toLowerCase().includes(query.toLowerCase())); if (!list.length) return '<div style="padding:25px;text-align:center" class="muted">没有找到这个题库</div>'; return list.map(b => { const c = counts([b]); return '<div class="bank-row"><div class="bank-cover">' + icon('book') + '</div><div class="grow"><button class="bank-title" data-action="select-bank" data-id="' + esc(b.id) + '">' + esc(b.name) + '</button><div class="bank-details">' + b.questions.length + ' 道题目 · ' + new Date(b.createdAt).toLocaleDateString('zh-CN') + ' 导入</div></div><div class="bank-progress">已练 ' + c.done + ' / ' + c.total + '<div class="progress-track"><div class="progress-fill" style="width:' + (c.total ? c.done / c.total * 100 : 0) + '%"></div></div></div><button class="button" data-action="select-bank" data-id="' + esc(b.id) + '">去练习' + icon('chevron') + '</button><button class="icon-button" title="重命名题库" aria-label="重命名题库" data-action="rename-bank" data-id="' + esc(b.id) + '">' + icon('edit') + '</button><button class="icon-button" title="删除题库" aria-label="删除题库" data-action="delete-bank" data-id="' + esc(b.id) + '">' + icon('trash') + '</button></div>'; }).join(''); }
+  function bankRows(query) { const list = banks().filter(b => b.name.toLowerCase().includes(query.toLowerCase())); if (!list.length) return '<div style="padding:25px;text-align:center" class="muted">没有找到这个题库</div>'; return list.map(b => { const c = counts([b]); return '<div class="bank-row"><div class="bank-cover">' + icon('book') + '</div><div class="grow"><button class="bank-title" data-action="select-bank" data-id="' + esc(b.id) + '">' + esc(b.name) + '</button><div class="bank-details">' + b.questions.length + ' 道题目 · ' + new Date(b.createdAt).toLocaleDateString('zh-CN') + ' 导入</div></div><div class="bank-progress">已练 ' + c.done + ' / ' + c.total + '<div class="progress-track"><div class="progress-fill" style="width:' + (c.total ? c.done / c.total * 100 : 0) + '%"></div></div></div><button class="button" data-action="select-bank" data-id="' + esc(b.id) + '">去练习' + icon('chevron') + '</button>' + (canManageBanks() ? '<button class="icon-button" title="重命名题库" aria-label="重命名题库" data-action="rename-bank" data-id="' + esc(b.id) + '">' + icon('edit') + '</button><button class="icon-button" title="删除题库" aria-label="删除题库" data-action="delete-bank" data-id="' + esc(b.id) + '">' + icon('trash') + '</button>' : '') + '</div>'; }).join(''); }
   function dailyData() { const all = {}; for (const r of Object.values(state.records)) for (const h of r.history || []) { const d = dateKey(h.at); all[d] ||= { attempts: 0, right: 0 }; all[d].attempts++; all[d].right += h.correct ? 1 : 0; } return all; }
   function weekly() { const days = [], data = state.activity || {}; for (let i = 6; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); days.push({ day: d, count: data[dateKey(d)]?.attempts || 0 }); } const total = days.reduce((s, d) => s + d.count, 0), max = Math.max(1, ...days.map(d => d.count)); return '<div class="aside-card"><div class="row" style="justify-content:space-between"><h3>近七天练习</h3>' + icon('bars') + '</div><div class="week-total">' + total + '<small>次作答</small></div><p class="week-label">每一次练习，都算数</p><div class="week-chart">' + days.map((d, i) => '<div class="day-column ' + (i === 6 ? 'today' : '') + '" title="' + dateKey(d.day) + '：' + d.count + ' 次"><div class="day-bar" style="height:' + Math.max(3, d.count / max * 58) + 'px"></div><small>' + (i === 6 ? '今' : '日一二三四五六'[d.day.getDay()]) + '</small></div>').join('') + '</div><div class="aside-rule"><span>累计练习天数</span><strong>' + Object.keys(data).length + ' 天</strong></div></div>'; }
   function sessionContext() { const s = state.session; if (!s) return {}; const b = banks().find(b => b.id === s.bankId); if (!b) return {}; const q = b.questions.find(q => q.id === s.ids[s.index]); return { s, b, q, answer: s.answers[s.ids[s.index]] }; }
@@ -263,12 +278,16 @@
     return html;
   }
   function history() { const c = counts(), data = state.activity || {}, days = Object.keys(data).sort().reverse(); return pageHead('YOUR PROGRESS MATTERS', '学习记录', '记录每一次作答，也看见自己的积累。') + '<div class="stats">' + stat('check', '累计作答', c.attempts.toLocaleString(), '次') + stat('book', '已练题目', c.done.toLocaleString(), '道') + stat('bars', '累计正确率', c.rate) + stat('clock', '累计练习天数', days.length, '天') + '</div>' + (days.length ? '<div class="history-wrap"><table class="history-table"><thead><tr><th>练习日期</th><th>作答次数</th><th>答对次数</th><th>正确率</th></tr></thead><tbody>' + days.map(day => '<tr><td>' + esc(day) + '</td><td>' + data[day].attempts + '</td><td class="good-text">' + data[day].right + '</td><td>' + Math.round(data[day].right / data[day].attempts * 100) + '%</td></tr>').join('') + '</tbody></table></div>' : empty('每一份积累，都从第一题开始', '完成一道题目后，这里会记录当天的学习情况。', '<button class="button primary" data-action="nav" data-view="home">开始学习</button>')); }
-  function manage() { return pageHead('KEEP YOUR PROGRESS SAFE', '数据与备份', '你的题库和学习记录，由你自己保管。') + (cloud ? '<div class="data-card"><div class="mode-icon">' + icon('shield') + '</div><div class="grow"><h3>账号与同步</h3><p class="cloud-status">' + cloudLabel() + '</p><p class="cloud-message"></p></div><button class="button" data-action="account">管理同步</button></div>' : '') + syncBackups.map(item => '<div class="data-card"><div class="grow"><h3>' + esc(item.label) + '</h3><p>' + new Date(item.at).toLocaleString('zh-CN') + ' · ' + snapshotSummary(item.payload) + '</p></div><button class="button" data-action="export-sync-backup" data-id="' + item.id + '">导出此备份</button></div>').join('') + '<div class="data-card"><div class="mode-icon">' + icon('download') + '</div><div class="grow"><h3>导出完整备份</h3><p>包含全部题库、练习进度、答题记录、错题、收藏、笔记和设置。</p>' + (state.lastBackup ? '<p>上次导出：' + new Date(state.lastBackup).toLocaleString('zh-CN') + '</p>' : '') + '</div><button class="button primary" data-action="export-backup">导出备份' + icon('download') + '</button></div><div class="data-card"><div class="mode-icon">' + icon('upload') + '</div><div class="grow"><h3>从备份恢复</h3><p>用于换设备或恢复学习记录。恢复前会展示预览，确认后替换当前全部数据。</p></div><button class="button" data-action="restore-backup">选择备份文件</button></div><div class="data-card"><div class="mode-icon">' + icon('book') + '</div><div class="grow"><h3>CSV 题库模板</h3><p>支持单选、多选、判断。选项列可以按需要扩展，模板附有三道示例题。</p></div><button class="button" data-action="template">下载模板</button></div><div class="data-warning">' + icon('info') + ' 数据保存在当前浏览器、当前打开位置的本地空间中。更换浏览器、移动离线文件或清理网站数据后，可能需要重新恢复备份。建议固定使用同一个文件位置和浏览器，并定期导出。' + (cloud ? '登录后的设备会自动同步。断网时先保存到本机，联网后重试；同时修改导致冲突时会提示处理，并保留最近 8 份同步前备份。' : '离线设备之间暂不自动同步，可手动传递备份文件。') + '</div>'; }
+  function manage() { if (!canManageBanks()) return personalManage(); return pageHead('KEEP YOUR PROGRESS SAFE', '数据与备份', '你的题库和学习记录，由你自己保管。') + (cloud ? '<div class="data-card"><div class="mode-icon">' + icon('shield') + '</div><div class="grow"><h3>账号与同步</h3><p class="cloud-status">' + cloudLabel() + '</p><p class="cloud-message"></p></div><button class="button" data-action="account">管理同步</button></div>' : '') + syncBackups.map(item => '<div class="data-card"><div class="grow"><h3>' + esc(item.label) + '</h3><p>' + new Date(item.at).toLocaleString('zh-CN') + ' · ' + snapshotSummary(item.payload) + '</p></div><button class="button" data-action="export-sync-backup" data-id="' + item.id + '">导出此备份</button></div>').join('') + '<div class="data-card"><div class="mode-icon">' + icon('download') + '</div><div class="grow"><h3>导出完整备份</h3><p>包含全部题库、练习进度、答题记录、错题、收藏、笔记和设置。</p>' + (state.lastBackup ? '<p>上次导出：' + new Date(state.lastBackup).toLocaleString('zh-CN') + '</p>' : '') + '</div><button class="button primary" data-action="export-backup">导出备份' + icon('download') + '</button></div><div class="data-card"><div class="mode-icon">' + icon('upload') + '</div><div class="grow"><h3>从备份恢复</h3><p>用于换设备或恢复学习记录。恢复前会展示预览，确认后替换当前全部数据。</p></div><button class="button" data-action="restore-backup">选择备份文件</button></div><div class="data-card"><div class="mode-icon">' + icon('book') + '</div><div class="grow"><h3>CSV 题库模板</h3><p>支持单选、多选、判断。选项列可以按需要扩展，模板附有三道示例题。</p></div><button class="button" data-action="template">下载模板</button></div><div class="data-warning">' + icon('info') + ' 数据保存在当前浏览器、当前打开位置的本地空间中。更换浏览器、移动离线文件或清理网站数据后，可能需要重新恢复备份。建议固定使用同一个文件位置和浏览器，并定期导出。' + (cloud ? '登录后的设备会自动同步。断网时先保存到本机，联网后重试；同时修改导致冲突时会提示处理，并保留最近 8 份同步前备份。' : '离线设备之间暂不自动同步，可手动传递备份文件。') + '</div>'; }
   function modal(title, body, footer = '', wide = false) { const active = document.activeElement; if (!$('#overlay').children.length) ui.lastFocus = active; $('#overlay').innerHTML = '<div class="modal-backdrop"><section class="modal ' + (wide ? 'wide' : '') + '" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header class="modal-header"><h2 id="modal-title">' + title + '</h2><button class="icon-button" data-action="close-modal" title="关闭" aria-label="关闭">' + icon('close') + '</button></header><div class="modal-body">' + body + '</div>' + (footer ? '<footer class="modal-footer">' + footer + '</footer>' : '') + '</section></div>'; document.body.style.overflow = 'hidden'; $('#overlay').querySelector('input:not([type=checkbox]),select,textarea,button')?.focus(); }
   function closeModal() { $('#overlay').innerHTML = ''; document.body.style.overflow = ''; confirmAction = null; ui.lastFocus?.focus?.(); }
   function ask(title, message, action, danger = false) { confirmAction = action; modal(title, '<p class="help" style="font-size:13px;line-height:2">' + message + '</p>', '<button class="button" data-action="close-modal">取消</button><button class="button ' + (danger ? 'danger' : 'primary') + '" data-action="confirm">确认' + (danger ? '删除' : '') + '</button>'); }
-  function importDialog() { pendingImport = null; previewPage = 0; modal('导入题库', '<div class="drop-zone" id="drop-zone" role="button" tabindex="0" data-action="choose-csv">' + icon('upload') + '<strong>点击选择 CSV 文件，或拖到这里</strong><p>仅在本机读取，不会上传到任何服务器 · 最大 10 MB</p></div><button class="button" style="width:100%;margin-top:14px" data-action="template">' + icon('download') + '下载 CSV 填写模板</button><div class="format-guide"><h3>填写说明</h3><p>必填：题型、题目、答案；选择题还需填写选项。<br>选项列：选项A、选项B…按需要继续增加，支持超过 26 个选项（AA、AB…）。<br>多选答案推荐 A|B|D，也接受 ABD、A、B、D；顺序不影响判题。AA 等多字母标签须使用 | 分隔。<br>判断题：填写“正确”或“错误”，选项列可留空。<br>章节支持 / 分级，例如 数据库/索引；解析、题目ID可选填。<br>兼容现有题库的 typeName、question、answerText 等英文列名。支持 UTF-8 与常见 GB18030 编码。</p></div>'); }
+  function importDialog() { requireBankAdmin(); pendingImport = null; previewPage = 0; modal('导入题库', '<div class="drop-zone" id="drop-zone" role="button" tabindex="0" data-action="choose-csv">' + icon('upload') + '<strong>点击选择 CSV 文件，或拖到这里</strong><p>' + (cloud ? '导入后同步为所有账号共用的题库' : '仅在本机读取，不会上传到任何服务器') + ' · 最大 10 MB</p></div><button class="button" style="width:100%;margin-top:14px" data-action="template">' + icon('download') + '下载 CSV 填写模板</button><div class="format-guide"><h3>填写说明</h3><p>必填：题型、题目、答案；选择题还需填写选项。<br>选项列：选项A、选项B…按需要继续增加，支持超过 26 个选项（AA、AB…）。<br>多选答案推荐 A|B|D，也接受 ABD、A、B、D；顺序不影响判题。AA 等多字母标签须使用 | 分隔。<br>判断题：填写“正确”或“错误”，选项列可留空。<br>章节支持 / 分级，例如 数据库/索引；解析、题目ID可选填。<br>兼容现有题库的 typeName、question、answerText 等英文列名。支持 UTF-8 与常见 GB18030 编码。</p></div>'); }
+  function personalManage() {
+    return pageHead('KEEP YOUR PROGRESS SAFE', '数据与备份', '仅管理当前账号的学习记录，共享题库由管理员维护。') + '<div class="data-card"><div class="grow"><h3>' + accountName() + ' · 账号与同步</h3><p class="cloud-status">' + cloudLabel() + '</p></div><button class="button" data-action="account">管理同步</button></div>' + syncBackups.map(item => '<div class="data-card"><div class="grow"><h3>' + esc(item.label) + '</h3><p>' + snapshotSummary(item.payload) + '</p></div><button class="button" data-action="export-sync-backup" data-id="' + item.id + '">导出此备份</button></div>').join('') + '<div class="data-card"><div class="grow"><h3>备份我的学习记录</h3><p>包含当前账号的答题记录、错题、收藏、笔记、考试和设置。</p></div><button class="button primary" data-action="export-backup">导出备份</button></div><div class="data-card"><div class="grow"><h3>恢复我的学习记录</h3><p>仅支持当前账号导出的备份，共享题库不会被替换。</p></div><button class="button" data-action="restore-backup">选择备份文件</button></div>';
+  }
   async function readCSV(file) {
+    requireBankAdmin();
     if (!file) return; if (!/\.csv$/i.test(file.name)) throw new Error('请选择 .csv 文件。'); if (file.size > 10 * 1024 * 1024) throw new Error('文件超过 10 MB，请拆分题库后导入。');
     const bytes = await file.arrayBuffer(); let text; try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { text = new TextDecoder('gb18030', { fatal: true }).decode(bytes); }
     pendingImport = { entries: C.parseCSV(text), name: file.name.replace(/\.csv$/i, ''), target: '', skip: false };
@@ -297,6 +316,7 @@
   function editorOptions() { return '<p class="help" style="margin-bottom:10px">选择题选项（判断题可忽略）</p>' + editorFields.map((o, i) => '<div class="option-edit"><label for="edit-option-' + i + '">' + o.label + '</label><input id="edit-option-' + i + '" data-option-index="' + i + '" value="' + esc(o.text) + '" placeholder="选项内容"></div>').join(''); }
   function captureEditor() { editorFields.forEach((o, i) => { o.text = $('#edit-option-' + i)?.value || ''; }); }
   async function confirmImport() {
+    requireBankAdmin();
     const p = pendingImport; if (!p) return; p.name = $('#import-name').value.trim(); p.target = $('#import-target').value;
     if (!p.target && !p.name) return toast('请填写题库名称。');
     const inspected = C.inspect(p.entries); if (inspected.some(r => r.validation) && !p.skip) return toast('请修正有误题目，或明确选择跳过。');
@@ -465,15 +485,30 @@
     return pageHead('EXAM RESULT', '考试成绩', esc(exam.bankName), '<button class="button" data-action="nav" data-view="exams">考试记录</button>') + '<section class="exam-result-card"><div class="eyebrow">' + (exam.autoSubmitted ? '考试到时 · 自动交卷' : '考试完成') + '</div><div class="exam-score ' + (r.passed ? 'good-text' : 'bad-text') + '">' + r.score + '<small>/ 100</small></div><h2>' + (r.passed ? '本次考试及格' : '继续巩固，下次进步') + '</h2><p class="help">及格线 ' + exam.passScore + ' 分 · 用时 ' + examTime(elapsed) + ' · ' + new Date(exam.finishedAt).toLocaleString('zh-CN') + '</p><div class="complete-stats"><div><strong class="good-text">' + r.right + '</strong><span>答对</span></div><div><strong class="bad-text">' + r.wrong + '</strong><span>答错</span></div><div><strong>' + r.unanswered + '</strong><span>未答</span></div></div><div class="exam-breakdown">' + C.TYPES.filter(type => r.byType[type].total).map(type => '<div><strong>' + type + '</strong><span>' + r.byType[type].total + ' 道</span><span>答对 ' + r.byType[type].right + ' · 答错 ' + r.byType[type].wrong + ' · 未答 ' + r.byType[type].unanswered + '</span></div>').join('') + '</div><p class="help exam-result-note">答错与未答题已加入错题本；已答题计入学习记录。每题等分，多选题全部选对才得分。</p><div class="exam-result-actions"><button class="button primary" data-action="exam-review" data-filter="">查看整卷解析</button><button class="button" data-action="exam-review" data-filter="wrong" ' + (!(r.wrong + r.unanswered) ? 'disabled' : '') + '>查看错题与未答</button><button class="button" data-action="nav" data-view="home">返回题库</button></div></section>';
   }
 
-  function settingsDialog() { const s = state.settings; modal('刷题设置', (cloud ? '<button class="account-setting" data-action="account"><strong>admin · 账号与同步</strong><span class="cloud-status">' + cloudLabel() + '</span>' + icon('chevron') + '</button>' : '') + '<div class="setting-row theme-setting"><strong>界面主题</strong><p>为专注选择合适的背景</p><div class="theme-options">' + C.THEMES.map(([value, name]) => '<button class="theme-choice ' + (s.theme === value ? 'active' : '') + '" data-action="setting-theme" data-value="' + value + '" aria-pressed="' + (s.theme === value) + '"><span class="theme-swatch" data-palette="' + value + '" aria-hidden="true"></span>' + name + '</button>').join('') + '</div></div><div class="setting-row"><div><strong>题目字号</strong><p>同时调整题干与选项</p></div><div class="segment">' + [[16, '小'], [18, '中'], [20, '大'], [23, '特大']].map(([value, name]) => '<button class="' + (Number(s.font) === value ? 'active' : '') + '" data-action="setting-font" data-value="' + value + '">' + name + '</button>').join('') + '</div></div>' + [['autoCorrect', '答对自动下一题', '显示结果约 1.6 秒后切换'], ['autoWrong', '答错自动下一题', '建议关闭，留出时间理解错题'], ['analysis', '答题后显示解析', '提交前始终隐藏答案与解析'], ['notes', '显示已有笔记', '也可以在题目下方手动打开']].map(([key, title, description]) => '<label class="setting-row"><span><strong>' + title + '</strong><p>' + description + '</p></span><input class="toggle" type="checkbox" data-setting="' + key + '" ' + (s[key] ? 'checked' : '') + ' aria-label="' + title + '"></label>').join(''), (['practice', 'exam', 'exam-review'].includes(ui.view) && !desktopCard.matches ? '<button class="button" data-action="settings-card">打开答题卡</button>' : '') + '<button class="button primary" data-action="close-modal">完成</button>'); }
+  function settingsDialog() { const s = state.settings; modal('刷题设置', (cloud ? '<button class="account-setting" data-action="account"><strong>' + accountName() + ' · 账号与同步</strong><span class="cloud-status">' + cloudLabel() + '</span>' + icon('chevron') + '</button>' : '') + '<div class="setting-row theme-setting"><strong>界面主题</strong><p>为专注选择合适的背景</p><div class="theme-options">' + C.THEMES.map(([value, name]) => '<button class="theme-choice ' + (s.theme === value ? 'active' : '') + '" data-action="setting-theme" data-value="' + value + '" aria-pressed="' + (s.theme === value) + '"><span class="theme-swatch" data-palette="' + value + '" aria-hidden="true"></span>' + name + '</button>').join('') + '</div></div><div class="setting-row"><div><strong>题目字号</strong><p>同时调整题干与选项</p></div><div class="segment">' + [[16, '小'], [18, '中'], [20, '大'], [23, '特大']].map(([value, name]) => '<button class="' + (Number(s.font) === value ? 'active' : '') + '" data-action="setting-font" data-value="' + value + '">' + name + '</button>').join('') + '</div></div>' + [['autoCorrect', '答对自动下一题', '显示结果约 1.6 秒后切换'], ['autoWrong', '答错自动下一题', '建议关闭，留出时间理解错题'], ['analysis', '答题后显示解析', '提交前始终隐藏答案与解析'], ['notes', '显示已有笔记', '也可以在题目下方手动打开']].map(([key, title, description]) => '<label class="setting-row"><span><strong>' + title + '</strong><p>' + description + '</p></span><input class="toggle" type="checkbox" data-setting="' + key + '" ' + (s[key] ? 'checked' : '') + ' aria-label="' + title + '"></label>').join(''), (['practice', 'exam', 'exam-review'].includes(ui.view) && !desktopCard.matches ? '<button class="button" data-action="settings-card">打开答题卡</button>' : '') + '<button class="button primary" data-action="close-modal">完成</button>'); }
   function download(content, type, name) { const url = URL.createObjectURL(new Blob([content], { type })); const a = document.createElement('a'); a.href = url; a.download = name; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 10000); }
-  async function restore(file) { if (!file) return; if (file.size > 80 * 1024 * 1024) throw new Error('备份文件超过 80 MB，无法读取。'); let restored; try { restored = C.validateState(JSON.parse(await file.text())); } catch (e) { throw new Error('备份读取失败：' + e.message); }
-    restored.settings = { ...defaultSettings, ...restored.settings }; const n = restored.banks.reduce((s, b) => s + b.questions.length, 0); ask('恢复备份 · 将替换当前全部数据', '备份包含 <strong>' + restored.banks.length + ' 个题库、' + n + ' 道题目</strong>，以及学习记录、收藏和笔记。<br>此操作会覆盖当前本机全部数据。建议先取消并导出当前备份。确认恢复后，其他设备不会自动更新。', async () => { const old = state; state = restored; state.session = sanitizeSession(restored.session); try { await save(); } catch (e) { state = old; throw e; } ui = { ...ui, view: 'home', bankId: state.selectedBank || banks()[0]?.id || '', query: '', type: '', chapter: '', collectionBank: '' }; closeModal(); render(); examTick(); toast('备份已恢复。'); });
+  async function restore(file) {
+    if (!file) return;
+    if (file.size > 80 * 1024 * 1024) throw new Error('备份文件超过 80 MB，无法读取。');
+    let restored;
+    try { restored = C.validateState(JSON.parse(await file.text())); } catch (e) { throw new Error('备份读取失败：' + e.message); }
+    if (cloud && ((restored.accountId && restored.accountId !== localOwner) || (!canManageBanks() && restored.accountId !== localOwner))) throw new Error('请选择当前账号导出的备份，不能恢复其他账号的学习记录。');
+    if (!canManageBanks()) restored.banks = structuredClone(banks());
+    delete restored.accountId;
+    restored.settings = { ...defaultSettings, ...restored.settings };
+    const n = restored.banks.reduce((s, b) => s + b.questions.length, 0);
+    ask(canManageBanks() ? '恢复备份 · 将替换当前全部数据' : '恢复当前账号的学习记录', canManageBanks() ? '备份包含 <strong>' + restored.banks.length + ' 个题库、' + n + ' 道题目</strong>及学习记录。确认后会替换当前数据并同步，请先导出当前备份。' : '只替换当前账号的练习进度、错题、收藏、笔记和考试记录，共享题库由管理员维护。建议先导出当前备份。', async () => {
+      const old = state; state = restored; state.session = sanitizeSession(restored.session);
+      try { await save(); } catch (e) { state = old; throw e; }
+      ui = { ...ui, view: 'home', bankId: state.selectedBank || banks()[0]?.id || '', query: '', type: '', chapter: '', collectionBank: '' };
+      closeModal(); render(); examTick(); toast('备份已恢复。');
+    });
   }
   function sanitizeSession(s) { if (!s || !Array.isArray(s.ids) || !s.ids.length || !s.answers || typeof s.answers !== 'object' || !Number.isInteger(s.index) || s.index < 0 || s.index >= s.ids.length || !modes[s.mode]) return null; const b = banks().find(b => b.id === s.bankId); if (!b || new Set(s.ids).size !== s.ids.length || s.ids.some(id => !b.questions.some(q => q.id === id))) return null; for (const [id, a] of Object.entries(s.answers)) { const q = b.questions.find(q => q.id === id); if (!q || !s.ids.includes(id) || !Array.isArray(a.selected) || a.selected.some(x => !q.options.some(o => o.label === x)) || typeof a.correct !== 'boolean') return null; a.correct = C.correct(q, a.selected); } s.complete = Object.keys(s.answers).length === s.ids.length; return s; }
   function report(error) { console.error(error); toast(error.message || '操作没有完成，请重试。'); }
   async function perform(action, el) {
     if (accountLocked || accountBusy) return;
+    if (bankActions.has(action)) requireBankAdmin();
     if (['jump', 'exam-jump', 'nav', 'summary', 'exam-submit', 'exam-result', 'exam-review'].includes(action)) { ui.answerSheet = false; syncAnswerSheet(); }
     if (!['choose', 'submit'].includes(action)) clearTimeout(nextTimer);
     switch (action) {
@@ -494,7 +529,7 @@
       case 'sync-backups': closeModal(); ui.view = 'manage'; render(); break;
       case 'export-sync-backup': {
         const item = syncBackups.find(b => b.id === el.dataset.id);
-        if (item) download(JSON.stringify(item.payload, null, 2), 'application/json', '题间同步备份_' + item.id + '.json');
+        if (item) download(JSON.stringify({ ...item.payload, accountId: localOwner || undefined }, null, 2), 'application/json', '题间同步备份_' + item.id + '.json');
         break;
       }
       case 'account-logout': {
@@ -557,7 +592,7 @@
       case 'settings': settingsDialog(); break;
       case 'setting-theme': state.settings.theme = el.dataset.value; await save(); render(); settingsDialog(); break;
       case 'setting-font': state.settings.font = Number(el.dataset.value); await save(); render(); settingsDialog(); break;
-      case 'export-backup': state.lastBackup = new Date().toISOString(); download(JSON.stringify(state, null, 2), 'application/json', '题间备份_' + dateKey() + '.json'); await save(); if (ui.view === 'manage') render(); toast('完整备份已导出，请妥善保存。'); break;
+      case 'export-backup': state.lastBackup = new Date().toISOString(); download(JSON.stringify({ ...state, accountId: localOwner || undefined }, null, 2), 'application/json', '题间备份_' + dateKey() + '.json'); await save(); if (ui.view === 'manage') render(); toast('完整备份已导出，请妥善保存。'); break;
       case 'restore-backup': $('#backup-file').value = ''; $('#backup-file').click(); break;
       case 'preview-prev': captureImport(); previewPage--; importPreview(); break;
       case 'preview-next': captureImport(); previewPage++; importPreview(); break;
@@ -629,6 +664,7 @@
   document.addEventListener('submit', event => { if (event.target.id !== 'login-form') return; event.preventDefault(); if (!accountBusy) signIn($('#login-username').value, $('#login-password').value); });
   document.addEventListener('click', e => { const el = e.target.closest('[data-action]'); if (!el || el.disabled) return; perform(el.dataset.action, el).catch(report); });
   document.addEventListener('change', e => {
+    if (accountLocked || accountBusy) return;
     const el = e.target;
     (async () => {
       if (el.id === 'exam-bank') { const b = banks().find(b => b.id === el.value); $('#exam-chapter').innerHTML = chapterOptions(b); updateExamConfig(true); }
@@ -646,6 +682,7 @@
     })().catch(report);
   });
   document.addEventListener('input', e => {
+    if (accountLocked || accountBusy) return;
     const el = e.target;
     if (/^exam-(count-\d|duration|pass)$/.test(el.id)) updateExamConfig();
     if (el.id === 'bank-search') $('#bank-list').innerHTML = bankRows(el.value);
@@ -657,6 +694,7 @@
   document.addEventListener('dragleave', e => e.target.closest('#drop-zone')?.classList.remove('dragging'));
   document.addEventListener('drop', e => { const drop = e.target.closest('#drop-zone'); if (drop) { e.preventDefault(); drop.classList.remove('dragging'); readCSV(e.dataTransfer.files[0]).catch(report); } });
   document.addEventListener('keydown', e => {
+    if (accountLocked || accountBusy) return;
     if ($('#overlay').children.length) {
       if (e.key === 'Escape') { e.preventDefault(); if ($('#edit-text')) { editorIndex = null; importPreview(); } else closeModal(); }
       if (e.key === 'Tab') { const controls = [...$('#overlay').querySelectorAll('button:not(:disabled),input:not(:disabled),select,textarea,[tabindex="0"]')].filter(x => x.offsetParent !== null); const first = controls[0], last = controls.at(-1); if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } }
@@ -684,13 +722,40 @@
   document.addEventListener('focusout', e => { if (e.target.id === 'question-note') document.body.classList.remove('editing-note'); });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (state?.settings.theme === 'system') applyTheme(); });
   window.addEventListener('beforeunload', () => { if (noteTimer) { clearTimeout(noteTimer); save().catch(() => {}); } });
+  function freshState(withSeed) {
+    const questions = withSeed ? C.inspect(C.parseCSV(window.QUIZ_SEED_CSV || C.template())).filter(r => r.q && !r.duplicate).map(r => r.q) : [];
+    return { version: 1, banks: withSeed ? [{ id: 'builtin-theory', name: '计算机程序设计员 · 三级', questions, createdAt: new Date().toISOString() }] : [], records: {}, session: null, settings: { ...defaultSettings }, activity: {}, selectedBank: withSeed ? 'builtin-theory' : '', exams: [], activeExam: null };
+  }
+  async function loadAccount(user) {
+    await saveQueue;
+    localOwner = user.id;
+    let saved = db ? await readDB(localKey('main')) : null;
+    cloudMeta = db ? await readDB(localKey('cloud-meta')) || {} : {};
+    syncBackups = db ? await readDB(localKey('sync-backups')) || [] : [];
+    // Only the original administrator can adopt the pre-account local workspace.
+    if (!saved && cloudClient.isAdmin && db) {
+      const legacyMeta = await readDB('cloud-meta') || {};
+      if (!legacyMeta.userId || legacyMeta.userId === user.id) {
+        saved = await readDB('main'); cloudMeta = legacyMeta;
+        syncBackups = await readDB('sync-backups') || [];
+      }
+    }
+    state = saved ? C.validateState(saved) : freshState(cloudClient.isAdmin);
+    state.settings = { ...defaultSettings, ...state.settings }; state.exams ||= []; state.activeExam ||= null; state.activity ||= dailyData();
+    state.session = sanitizeSession(state.session);
+    ui = { view: 'home', bankId: state.selectedBank || banks()[0]?.id || '', query: '', type: '', chapter: '', listPage: 0, draft: [], showNote: false, cardPage: 0, collectionBank: '' };
+    pendingImport = null; editorIndex = null; confirmAction = null;
+    if (db) await persistLocal();
+  }
   try {
-    db = await openDB(); state = await readDB(); cloudMeta = await readDB('cloud-meta') || {}; syncBackups = await readDB('sync-backups') || [];
+    db = await openDB();
+    if (cloudClient?.session) await loadAccount(cloudClient.session.user);
+    else if (cloudConfig.enabled) state = freshState(false);
+    else { state = await readDB(); cloudMeta = await readDB('cloud-meta') || {}; syncBackups = await readDB('sync-backups') || []; }
     if (state) C.validateState(state);
   } catch (e) { state = null; db = null; storageOK = false; storageError = '本地存储不可用，请在关闭前导出备份'; console.error(e); }
   if (!state) {
-    let questions = []; const inspected = C.inspect(C.parseCSV(window.QUIZ_SEED_CSV || C.template())); questions = inspected.filter(r => r.q && !r.duplicate).map(r => r.q);
-    state = { version: 1, banks: [{ id: 'builtin-theory', name: '计算机程序设计员 · 三级', questions, createdAt: new Date().toISOString() }], records: {}, session: null, settings: { ...defaultSettings }, activity: {}, selectedBank: 'builtin-theory' };
+    state = freshState(!cloudConfig.enabled || !!cloudClient?.isAdmin);
     try { await save(); } catch (e) { report(e); }
   }
   state.settings = { ...defaultSettings, ...state.settings }; state.activity ||= dailyData(); state.session = sanitizeSession(state.session); ui.bankId = state.selectedBank || banks()[0]?.id || ''; ui.collectionBank = ''; state.exams ||= []; state.activeExam ||= null; initCloud(); render(); examTick(); setInterval(examTick, 500); if (cloud && !accountLocked) cloud.run();

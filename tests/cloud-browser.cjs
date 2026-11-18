@@ -30,11 +30,11 @@ const path = require('node:path');
         }
         if (!credentials.has((request.headers().authorization || '').replace('Bearer ', ''))) return reply({}, 401);
         if (url.pathname.endsWith('/logout')) return reply({});
-        if (url.pathname.endsWith('/tijian_workspaces')) return reply(!row ? [] : [url.searchParams.get('select').includes('payload') ? row : { revision: row.revision, updated_at: row.updated_at }]);
-        if (url.pathname.endsWith('/tijian_save_workspace')) {
-          if (body.expected_revision !== (row?.revision || 0)) return reply({ ok: false, ...row });
+        if (url.pathname.endsWith('/tijian_read_workspace')) return reply(!row ? { revision: 0, bank_revision: 0 } : body.known_revision === row.revision && body.known_bank_revision === 1 ? { revision: row.revision, bank_revision: 1, updated_at: row.updated_at } : { ...row, bank_revision: 1 });
+        if (url.pathname.endsWith('/tijian_save_account_workspace')) {
+          if (body.expected_revision !== (row?.revision || 0)) return reply({ ok: false, ...row, bank_revision: 1 });
           row = { revision: (row?.revision || 0) + 1, payload: body.workspace_payload, updated_at: new Date().toISOString() };
-          return reply({ ok: true, revision: row.revision, updated_at: row.updated_at });
+          return reply({ ok: true, revision: row.revision, bank_revision: 1, updated_at: row.updated_at });
         }
         return reply({}, 404);
       });
