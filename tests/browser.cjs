@@ -111,7 +111,6 @@ const { pathToFileURL } = require('node:url');
 
   await nav('home');
   await page.locator('[data-action=mode][data-mode=single]').click();
-  await page.locator('[data-action=confirm]').click();
   await page.locator('.question-card').waitFor();
   await page.keyboard.press('B');
   await page.locator('.answer-panel.good').waitFor();

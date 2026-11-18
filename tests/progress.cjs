@@ -87,7 +87,7 @@ const { pathToFileURL } = require('node:url');
     await start();
     assert.equal(await page.locator('.number-button.historical').count(), 2);
     await home();
-    await page.locator('[data-action=mode][data-mode=random]').click();
+    await page.locator('[data-action=configure-mode][data-mode=random]').click();
     await page.locator('#mode-type').selectOption('多选题');
     await page.locator('#mode-type').selectOption('多选题');
     await page.locator('#mode-status').selectOption('new');

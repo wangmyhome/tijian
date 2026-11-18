@@ -118,8 +118,59 @@
     ];
     return '\uFEFF' + [headers, ...rows].map(r => r.map(escapeCSV).join(',')).join('\r\n');
   }
+  const practiceTypes = { single: '单选题', multiple: '多选题', judgment: '判断题' };
+  const practiceModes = ['sequential', 'random', 'chapter', 'single', 'multiple', 'judgment', 'wrong', 'favorite', 'type', 'custom'];
+  function practiceKey(bankId, mode, filters = {}) {
+    return JSON.stringify([bankId, mode, filters.chapter || '', practiceTypes[mode] || filters.type || '', filters.status || '', mode === 'random' ? Number(filters.count) || 20 : '', filters.scope || '']);
+  }
+  const practicePlace = (bankId, mode) => JSON.stringify([bankId, mode]);
+  function reconcilePractice(session, bank) {
+    if (!session || !bank || !practiceModes.includes(session.mode) || !Array.isArray(session.ids) || !session.ids.length || !Number.isInteger(session.index) || session.index < 0 || session.index >= session.ids.length || !session.answers || typeof session.answers !== 'object') return null;
+    const questions = new Map(bank.questions.map(q => [q.id, q])), savedFilters = session.filters || {};
+    const filters = { chapter: typeof savedFilters.chapter === 'string' ? savedFilters.chapter : '', type: TYPES.includes(savedFilters.type) ? savedFilters.type : '', status: ['new', 'done'].includes(savedFilters.status) ? savedFilters.status : '' };
+    if (session.mode === 'random') filters.count = Number.isInteger(savedFilters.count) && savedFilters.count > 0 ? savedFilters.count : 20;
+    if (typeof savedFilters.scope === 'string' && savedFilters.scope) filters.scope = savedFilters.scope;
+    const ids = [...new Set(session.ids.filter(id => questions.has(id)))];
+    // Keep this round's answered questions even when they no longer match "unpracticed" or a review filter.
+    if (!filters.scope && !filters.status && ['sequential', 'chapter', 'single', 'multiple', 'judgment', 'type'].includes(session.mode)) {
+      const known = new Set(ids);
+      for (const q of bank.questions) if (!known.has(q.id) && (!filters.chapter || q.chapter === filters.chapter || q.chapter.startsWith(filters.chapter + '/')) && (!(practiceTypes[session.mode] || filters.type) || q.type === (practiceTypes[session.mode] || filters.type))) { ids.push(q.id); known.add(q.id); }
+    }
+    if (!ids.length) return null;
+    const answers = {}, drafts = {};
+    const validSelection = (q, selected) => Array.isArray(selected) && selected.length && new Set(selected).size === selected.length && (q.type === '多选题' || selected.length === 1) && selected.every(label => q.options.some(o => o.label === label));
+    for (const id of ids) {
+      const q = questions.get(id), answer = session.answers[id], draft = session.drafts?.[id];
+      if (answer && validSelection(q, answer.selected)) answers[id] = { ...answer, correct: correct(q, answer.selected) };
+      else if (validSelection(q, draft)) drafts[id] = [...draft];
+    }
+    const present = new Set(ids), current = session.ids[session.index], next = session.ids.slice(session.index).find(id => present.has(id));
+    return { ...session, bankId: bank.id, filters, ids, index: Math.max(0, ids.indexOf(present.has(current) ? current : next || ids[Math.min(session.index, ids.length - 1)])), answers, drafts, complete: Object.keys(answers).length === ids.length };
+  }
+  function rememberPractice(state) {
+    state.practiceSessions ||= {}; state.practiceLast ||= {};
+    const s = state.session; if (!s) return;
+    const id = practiceKey(s.bankId, s.mode, s.filters);
+    state.practiceSessions[id] = s;
+    if (!s.filters?.scope) state.practiceLast[practicePlace(s.bankId, s.mode)] = id;
+  }
+  function restorePractice(state) {
+    const sessions = {}, previous = state.practiceLast || {};
+    for (const s of Object.values(state.practiceSessions || {})) {
+      const clean = reconcilePractice(s, state.banks.find(b => b.id === s?.bankId));
+      if (clean) sessions[practiceKey(clean.bankId, clean.mode, clean.filters)] = clean;
+    }
+    const active = reconcilePractice(state.session, state.banks.find(b => b.id === state.session?.bankId));
+    state.practiceSessions = sessions; state.practiceLast = {};
+    for (const s of Object.values(sessions).sort((a, b) => String(a.updatedAt || a.startedAt || '').localeCompare(String(b.updatedAt || b.startedAt || '')))) if (!s.filters?.scope) state.practiceLast[practicePlace(s.bankId, s.mode)] = practiceKey(s.bankId, s.mode, s.filters);
+    for (const [place, id] of Object.entries(previous)) if (Object.hasOwn(sessions, id) && !sessions[id].filters.scope && practicePlace(sessions[id].bankId, sessions[id].mode) === place) state.practiceLast[place] = id;
+    state.session = active;
+    rememberPractice(state);
+    return state;
+  }
   function validateState(s) {
     if (!s || s.version !== 1 || !Array.isArray(s.banks) || !s.records || typeof s.records !== 'object' || Array.isArray(s.records) || !s.settings || typeof s.settings !== 'object') throw new Error('不是有效的题间备份文件。');
+    for (const field of ['practiceSessions', 'practiceLast']) if (s[field] !== undefined && (!s[field] || typeof s[field] !== 'object' || Array.isArray(s[field]))) throw new Error('备份中的练习进度无效。');
     const bankIds = new Set();
     for (const b of s.banks) { if (!b.id || bankIds.has(b.id) || typeof b.name !== 'string' || !Array.isArray(b.questions)) throw new Error('备份中的题库信息无效。'); bankIds.add(b.id); const ids = new Set(); for (const q of b.questions) { if (!q.id || ids.has(q.id) || !TYPES.includes(q.type) || typeof q.text !== 'string' || !q.text.trim() || !Array.isArray(q.options) || q.options.length < 2 || !Array.isArray(q.answer) || !q.answer.length || typeof q.chapter !== 'string' || typeof q.analysis !== 'string') throw new Error('备份中的题目格式无效。'); ids.add(q.id); const labels = new Set(q.options.map(o => o.label)); if (labels.size !== q.options.length || q.options.some(o => typeof o.label !== 'string' || !/^[A-Z]+$/.test(o.label) || typeof o.text !== 'string') || q.answer.some(a => !labels.has(a)) || (q.type !== '多选题' && q.answer.length !== 1)) throw new Error('备份中的答案或选项无效。'); } }
     for (const r of Object.values(s.records)) { if (!r || typeof r !== 'object' || !Number.isFinite(r.attempts) || r.attempts < 0 || !Number.isFinite(r.right) || r.right < 0 || !Number.isFinite(r.wrong) || r.wrong < 0 || typeof r.note !== 'string' || !Array.isArray(r.history) || r.history.some(h => !h || typeof h.at !== 'string' || typeof h.correct !== 'boolean')) throw new Error('备份中的练习记录无效。'); }
@@ -136,7 +187,7 @@
     if (s.activeExam != null) validateExam(s.activeExam);
     return s;
   }
-  const api = { TYPES, THEMES, hash, label, optionLabel, parseCSV, normalize, inspect, correct, signature, template, validateState, examPaper, examResult, validateExam };
+  const api = { TYPES, THEMES, hash, label, optionLabel, parseCSV, normalize, inspect, correct, signature, template, validateState, examPaper, examResult, validateExam, practiceKey, practicePlace, reconcilePractice, rememberPractice, restorePractice };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.QuizCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

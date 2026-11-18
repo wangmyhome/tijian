@@ -56,7 +56,7 @@
   function readDB(key = 'main') { return new Promise((resolve, reject) => { const tx = db.transaction('workspace', 'readonly'); const r = tx.objectStore('workspace').get(key); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); }); }
   function saveLabel() { return !storageOK ? '保存失败，请立即导出备份' : state.savedAt ? '已保存到本机 · ' + new Date(state.savedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '练习记录保存在当前浏览器'; }
   function updateSaveIndicators() { document.querySelectorAll('.save-indicator').forEach(el => { el.textContent = saveLabel(); el.classList.toggle('save-failed', !storageOK); }); }
-  function save() { cloud?.changed(); return persistLocal(); }
+  function save() { C.rememberPractice(state); cloud?.changed(); return persistLocal(); }
   function persistLocal() {
     const snapshot = structuredClone(state);
     const metaSnapshot = structuredClone(cloudMeta);
@@ -118,7 +118,7 @@
   function canApplyCloud() { return !accountLocked && !['practice', 'exam', 'exam-review'].includes(ui.view) && !$('#overlay').children.length && document.activeElement?.tagName !== 'TEXTAREA'; }
   async function applyCloud(payload, meta) {
     state = structuredClone(payload); state.settings = { ...defaultSettings, ...state.settings }; state.exams ||= []; state.activeExam ||= null;
-    cloudMeta = meta; state.session = sanitizeSession(state.session);
+    cloudMeta = meta; C.restorePractice(state);
     if (!banks().some(b => b.id === state.selectedBank)) state.selectedBank = banks()[0]?.id || '';
     ui.bankId = state.selectedBank; ui.draft = []; ui.showNote = false;
     await persistLocal(); render();
@@ -224,9 +224,12 @@
     html += '<div class="stats">' + stat('book', '我的题库', banks().length, '个') + stat('list', '题目总数', c.total.toLocaleString(), '道') + stat('check', '已练题目', c.done.toLocaleString(), '道') + stat('bars', '累计正确率', c.rate) + '</div>';
     if (!b) return html + (canManageBanks() ? empty('你的第一本题库，从这里开始', '导入 CSV 文件，即可开始练习。', '<button class="button primary" data-action="import">' + icon('upload') + '导入题库</button>') : empty('暂无共享题库', '管理员上传并同步题库后，就可以开始练习。'));
     const bc = counts([b]), chapterCount = new Set(b.questions.map(q => q.chapter.split('/')[0])).size;
-    const session = state.session, canContinue = session && session.bankId === b.id && !session.complete;
-    html += '<div class="dashboard-grid"><section><div class="section-heading"><h2>继续学习</h2><select class="field-control" id="home-bank" aria-label="选择当前题库" style="max-width:260px;padding:6px 9px;font-size:11px">' + bankOptions(b.id) + '</select></div><div class="hero"><div class="hero-label">' + icon('book') + (canContinue ? '上次练习 · ' + modes[session.mode] : '你的专属练习题库') + '</div><h2>' + esc(b.name) + '</h2><div class="hero-meta"><span>' + b.questions.length.toLocaleString() + ' 道题目</span><span>' + chapterCount + ' 个章节</span><span>单选 / 多选 / 判断</span></div><div class="hero-footer"><div class="hero-progress"><div class="row"><span>整体练习进度</span><strong>' + bc.done + ' / ' + bc.total + '</strong></div><div class="progress-track"><div class="progress-fill" style="width:' + (bc.total ? bc.done / bc.total * 100 : 0) + '%"></div></div></div><button class="button" data-action="continue">' + (canContinue ? '继续练习' : '开始练习') + icon('arrow') + '</button></div></div><div class="section-heading practice-label"><h2>选择练习方式</h2><span>按自己的节奏，逐题掌握</span></div><div class="modes">';
-    for (const [m, glyph, description] of [['sequential', 'list', '按顺序练习，随时继续'], ['random', 'shuffle', '打乱顺序，巩固记忆'], ['chapter', 'chapter', '分章突破，循序渐进'], ['single', 'type', '选择一个正确答案'], ['multiple', 'list', '选择所有正确答案'], ['judgment', 'check', '判断说法是否正确'], ['wrong', 'wrong', bc.wrong + ' 道待巩固错题'], ['favorite', 'star', bc.favorite + ' 道收藏题目'], ['exam', 'clock', '限时自测，交卷统一判分']]) html += '<button class="mode" data-action="mode" data-mode="' + m + '"><span class="mode-icon">' + icon(glyph) + '</span><span><strong>' + (m === 'exam' ? '模拟考试' : modes[m]) + '</strong><small>' + description + '</small><span class="mode-progress">' + modeProgress(b, m) + '</span></span></button>';
+    const session = latestPractice(b), canContinue = !!session;
+    html += '<div class="dashboard-grid"><section><div class="section-heading"><h2>继续学习</h2><select class="field-control" id="home-bank" aria-label="选择当前题库" style="max-width:260px;padding:6px 9px;font-size:11px">' + bankOptions(b.id) + '</select></div><div class="hero"><div class="hero-label">' + icon('book') + (canContinue ? '上次练习 · ' + modes[session.mode] : '你的专属练习题库') + '</div><h2>' + esc(b.name) + '</h2><div class="hero-meta"><span>' + b.questions.length.toLocaleString() + ' 道题目</span><span>' + chapterCount + ' 个章节</span><span>单选 / 多选 / 判断</span></div><div class="hero-footer"><div class="hero-progress"><div class="row"><span>整体练习进度</span><strong>' + bc.done + ' / ' + bc.total + '</strong></div><div class="progress-track"><div class="progress-fill" style="width:' + (bc.total ? bc.done / bc.total * 100 : 0) + '%"></div></div></div><button class="button" data-action="continue">' + (canContinue ? session.complete ? '查看练习' : '继续练习' : '开始练习') + icon('arrow') + '</button></div></div><div class="section-heading practice-label"><h2>选择练习方式</h2><span>按自己的节奏，逐题掌握</span></div><div class="modes">';
+    for (const [m, glyph, description] of [['sequential', 'list', '按顺序练习，随时继续'], ['random', 'shuffle', '打乱顺序，巩固记忆'], ['chapter', 'chapter', '分章突破，循序渐进'], ['single', 'type', '选择一个正确答案'], ['multiple', 'list', '选择所有正确答案'], ['judgment', 'check', '判断说法是否正确'], ['wrong', 'wrong', bc.wrong + ' 道待巩固错题'], ['favorite', 'star', bc.favorite + ' 道收藏题目'], ['exam', 'clock', '限时自测，交卷统一判分']]) {
+      const saved = savedPractice(b, m), configurable = ['chapter', 'random', 'type', 'custom'].includes(m);
+      html += '<div class="mode-entry' + (configurable ? ' has-range' : '') + '"><button class="mode" data-action="mode" data-mode="' + m + '"><span class="mode-icon">' + icon(glyph) + '</span><span><strong>' + (m === 'exam' ? '模拟考试' : modes[m]) + '</strong><small>' + description + '</small><span class="mode-progress">' + modeProgress(b, m) + '</span>' + (saved ? '<span class="mode-resume">' + (saved.complete ? '本轮已完成 · 查看答案' : '继续第 ' + (saved.index + 1) + ' / ' + saved.ids.length + ' 题') + '</span>' : '') + '</span></button>' + (configurable ? '<button class="mode-range" data-action="configure-mode" data-mode="' + m + '">' + (m === 'chapter' ? '选择章节' : '调整范围') + '</button>' : '') + '</div>';
+    }
     html += '</div>' + (state.activeExam ? '<div class="exam-resume-banner"><div><strong>模拟考试进行中</strong><span>已答 ' + examAnswered(state.activeExam) + ' / ' + state.activeExam.questions.length + ' 道 · 剩余 <span class="exam-clock" role="timer">' + examTime(examRemaining(state.activeExam)) + '</span></span></div><button class="button primary" data-action="exam-resume">继续考试</button></div>' : '') + '</section><aside class="dashboard-aside">' + weekly() + '<div class="aside-card"><h3>温故知新</h3><button class="quick-link" data-action="nav" data-view="wrong">' + icon('wrong') + '我的错题<strong>' + c.wrong + '</strong>' + icon('chevron') + '</button><button class="quick-link" data-action="nav" data-view="favorite">' + icon('star') + '我的收藏<strong>' + c.favorite + '</strong>' + icon('chevron') + '</button></div><div class="tip"><strong>' + icon('info') + '给专注留一点空间</strong>选项支持键盘 <span class="kbd">A–Z</span> 选择；<span class="kbd">Enter</span> 提交或下一题。答错后停一停，看懂比刷快更重要。</div></aside></div><section class="library-section"><div class="section-heading"><h2>全部题库 <span style="margin-left:8px">' + banks().length + '</span></h2><label class="search">' + icon('search') + '<input id="bank-search" type="search" placeholder="搜索题库名称…" aria-label="搜索题库"></label></div><div class="bank-list" id="bank-list">' + bankRows('') + '</div></section><p class="footer-note">' + icon('shield') + '无需联网，安心练习。记得定期导出备份。</p>';
     return html;
   }
@@ -267,7 +270,7 @@
     const c = progress(b, eligibleQuestions(b, mode));
     return '已练 ' + c.done + ' / 未练 ' + c.remaining;
   }
-  function complete() { const { s, b } = sessionContext(); if (!s || !b) return empty('没有进行中的练习', '从题库选择一种方式开始吧。'); const done = Object.keys(s.answers).length, right = Object.values(s.answers).filter(a => a.correct).length; return '<div class="complete-card"><div class="complete-icon">' + icon('check') + '</div><div class="eyebrow">ONE STEP FORWARD</div><h1>' + (done === s.ids.length ? '本轮练习完成' : '稍作停留，也是一种进步') + '</h1><p>' + esc(b.name) + ' · ' + modes[s.mode] + '<br>' + (done === s.ids.length ? '答错的题目已经自动加入错题本。' : '还有 ' + (s.ids.length - done) + ' 道题未作答，进度已保留。') + '</p><div class="complete-stats"><div><strong>' + done + '</strong><span>已答题目</span></div><div><strong class="good-text">' + right + '</strong><span>回答正确</span></div><div><strong>' + (done ? Math.round(right / done * 100) + '%' : '—') + '</strong><span>本轮正确率</span></div></div><div class="row" style="justify-content:center;flex-wrap:wrap"><button class="button" data-action="nav" data-view="home">返回题库</button>' + (done < s.ids.length ? '<button class="button primary" data-action="resume-unanswered">继续未答题目' + icon('arrow') + '</button>' : '') + (done > right ? '<button class="button primary" data-action="retry-session-wrong">重练本轮错题</button>' : '') + '</div></div>'; }
+  function complete() { const { s, b } = sessionContext(); if (!s || !b) return empty('没有进行中的练习', '从题库选择一种方式开始吧。'); const done = Object.keys(s.answers).length, right = Object.values(s.answers).filter(a => a.correct).length; return '<div class="complete-card"><div class="complete-icon">' + icon('check') + '</div><div class="eyebrow">ONE STEP FORWARD</div><h1>' + (done === s.ids.length ? '本轮练习完成' : '稍作停留，也是一种进步') + '</h1><p>' + esc(b.name) + ' · ' + modes[s.mode] + '<br>' + (done === s.ids.length ? '答错的题目已经自动加入错题本。' : '还有 ' + (s.ids.length - done) + ' 道题未作答，进度已保留。') + '</p><div class="complete-stats"><div><strong>' + done + '</strong><span>已答题目</span></div><div><strong class="good-text">' + right + '</strong><span>回答正确</span></div><div><strong>' + (done ? Math.round(right / done * 100) + '%' : '—') + '</strong><span>本轮正确率</span></div></div><div class="row" style="justify-content:center;flex-wrap:wrap"><button class="button" data-action="nav" data-view="home">返回题库</button><button class="button" data-action="restart-practice">重新练习当前范围</button>' + (done < s.ids.length ? '<button class="button primary" data-action="resume-unanswered">继续未答题目' + icon('arrow') + '</button>' : '') + (s.complete && s.mode === 'random' && !s.filters.scope && eligibleQuestions(b, s.mode, s.filters).some(q => !record(b, q).attempts) ? '<button class="button primary" data-action="next-random-round">练习下一组未练题</button>' : '') + (done > right ? '<button class="button primary" data-action="retry-session-wrong">重练本轮错题</button>' : '') + '</div></div>'; }
   function visibleQuestions() { let result = []; for (const b of banks()) { if (ui.collectionBank && ui.collectionBank !== b.id) continue; for (const q of b.questions) { const r = record(b, q); if (ui.view === 'wrong' && !r.inWrong || ui.view === 'favorite' && !r.favorite) continue; if (ui.type && q.type !== ui.type) continue; if (ui.status === 'new' && r.attempts > 0 || ui.status === 'done' && !r.attempts) continue; if (ui.chapter && q.chapter !== ui.chapter && !q.chapter.startsWith(ui.chapter + '/')) continue; const query = ui.query.trim().toLowerCase(); if (query && ![q.text, q.chapter, q.analysis, ...q.options.map(o => o.text)].some(v => v.toLowerCase().includes(query))) continue; result.push({ b, q, r }); } } return result; }
   function collection() {
     const names = { wrong: ['REVIEW & REMEMBER', '我的错题本', '把暂时不会的，变成真正掌握的。'], favorite: ['KEEP THE IMPORTANT ONES', '我的收藏', '值得反复回看的题目，都在这里。'], search: ['FIND YOUR QUESTION', '搜索题目', '搜索题干、选项、解析或章节。'] }, n = names[ui.view];
@@ -339,32 +342,87 @@
     const summary = $('#mode-progress-summary'); if (!summary) return;
     const b = bank(), filters = { chapter: $('#mode-chapter').value, type: $('#mode-type').value }, qs = eligibleQuestions(b, '', filters), c = progress(b, qs);
     const status = $('#mode-status').value, selected = status === 'new' ? c.remaining : status === 'done' ? c.done : c.total;
+    const input = $('#mode-count'), button = $('[data-action="start-configured"]');
+    const saved = state.practiceSessions?.[C.practiceKey(b.id, button.dataset.mode, { ...filters, status, count: input ? Number(input.value) : undefined })];
     summary.innerHTML = '所选范围共 ' + c.total + ' 道，已练 <strong>' + c.done + '</strong> 道，未练 <strong>' + c.remaining + '</strong> 道。<br>按当前练习状态可选 <strong>' + selected + '</strong> 道题目，所有模式共享记录。';
-    const input = $('#mode-count'); if (input) { input.max = selected; if (Number(input.value) > selected) input.value = selected || 1; }
-    $('[data-action="start-configured"]').disabled = selected === 0;
+    if (saved) summary.innerHTML += '<br>此范围已有进度：' + (saved.complete ? '本轮已完成' : '第 ' + (saved.index + 1) + ' / ' + saved.ids.length + ' 题') + '，点击可继续查看。';
+    if (input) { input.max = Math.max(selected, saved ? Number(saved.filters.count) || saved.ids.length : 0); if (!saved && Number(input.value) > selected) input.value = selected || 1; }
+    button.disabled = selected === 0 && !saved;
   }
-  function configure(mode) {
+  function configure(mode, changeRange = false) {
     if (mode === 'exam') return examConfig();
     const b = bank(); if (!b) return importDialog();
+    const saved = savedPractice(b, mode);
+    if (saved && !changeRange) return activatePractice(saved);
+    const lastFilters = saved?.filters || {};
     if (practiceTypes[mode]) return startMode(mode, { type: practiceTypes[mode] });
     if (mode === 'sequential' || mode === 'wrong' || mode === 'favorite') return startMode(mode, {});
-    const body = '<p class="help" style="margin-bottom:22px">' + esc(b.name) + '</p><div class="form-field"><label for="mode-chapter">' + (mode === 'chapter' ? '选择章节' : '章节范围') + '</label><select id="mode-chapter">' + chapterOptions(b) + '</select></div><div class="form-field"><label for="mode-type">' + (mode === 'type' ? '选择题型' : '题型范围') + '</label><select id="mode-type">' + typeOptions('', b) + '</select></div><div class="form-field"><label for="mode-status">练习状态</label><select id="mode-status"><option value="">全部题目</option><option value="new">仅未练题目</option><option value="done">仅已练题目</option></select></div><div class="mode-progress-summary" id="mode-progress-summary"></div>' + (mode === 'random' ? '<div class="form-field"><label for="mode-count">本轮题量</label><input id="mode-count" type="number" min="1" max="' + b.questions.length + '" value="' + Math.min(20, b.questions.length) + '"><p class="help" id="mode-count-help">按筛选范围随机抽取，不重复出题。</p></div>' : '<p class="help">按题库中的原始顺序练习。各项筛选可以组合使用。</p>');
-    modal(modes[mode], body, '<button class="button" data-action="close-modal">取消</button><button class="button primary" data-action="start-configured" data-mode="' + mode + '">开始练习' + icon('arrow') + '</button>');
-    if (mode === 'chapter') $('#mode-chapter').value = chapterPaths(b)[0] || '';
-    if (mode === 'type') $('#mode-type').value = '单选题';
+    const body = '<p class="help" style="margin-bottom:22px">' + esc(b.name) + '</p><div class="form-field"><label for="mode-chapter">' + (mode === 'chapter' ? '选择章节' : '章节范围') + '</label><select id="mode-chapter">' + chapterOptions(b, lastFilters.chapter) + '</select></div><div class="form-field"><label for="mode-type">' + (mode === 'type' ? '选择题型' : '题型范围') + '</label><select id="mode-type">' + typeOptions(lastFilters.type || '', b) + '</select></div><div class="form-field"><label for="mode-status">练习状态</label><select id="mode-status"><option value="">全部题目</option><option value="new">仅未练题目</option><option value="done">仅已练题目</option></select></div><div class="mode-progress-summary" id="mode-progress-summary"></div>' + (mode === 'random' ? '<div class="form-field"><label for="mode-count">本轮题量</label><input id="mode-count" type="number" min="1" max="' + b.questions.length + '" value="' + (lastFilters.count || Math.min(20, b.questions.length)) + '"><p class="help" id="mode-count-help">按筛选范围随机抽取，不重复出题。</p></div>' : '<p class="help">按题库中的原始顺序练习。各项筛选可以组合使用。</p>');
+    modal(modes[mode], body, '<button class="button" data-action="close-modal">取消</button><button class="button primary" data-action="start-configured" data-mode="' + mode + '">继续 / 开始练习' + icon('arrow') + '</button>');
+    $('#mode-status').value = lastFilters.status || '';
+    if (mode === 'chapter' && !saved) $('#mode-chapter').value = chapterPaths(b)[0] || '';
+    if (mode === 'type' && !saved) $('#mode-type').value = '单选题';
     updateModeProgress();
   }
-  function startMode(mode, filters) {
-    const b = bank(); if (!b) return;
-    let qs = eligibleQuestions(b, mode, filters);
-    if (mode === 'random') { qs = [...qs]; for (let i = qs.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [qs[i], qs[j]] = [qs[j], qs[i]]; } if (!Number.isInteger(filters.count) || filters.count < 1) return toast('题量需要填写大于 0 的整数。'); qs = qs.slice(0, filters.count); }
-    if (!qs.length) return toast(mode === 'wrong' ? '这个题库还没有错题。' : mode === 'favorite' ? '这个题库还没有收藏题目。' : '所选范围没有题目，请换个条件。');
-    requestSession(b, qs, mode, filters);
+  function savedPractice(b, mode) {
+    return b && state.practiceSessions?.[state.practiceLast?.[C.practicePlace(b.id, mode)]];
   }
-  function requestSession(b, qs, mode, filters = {}) { const begin = async () => { clearTimeout(nextTimer); state.session = { bankId: b.id, ids: qs.map(q => q.id), mode, filters, index: 0, answers: {}, startedAt: new Date().toISOString(), complete: false }; ui.bankId = b.id; ui.draft = []; ui.showNote = false; ui.cardPage = 0; ui.view = 'practice'; await save(); closeModal(); render(); window.scrollTo(0, 0); }; const existing = state.session; if (existing && !existing.complete && existing.ids.length > Object.keys(existing.answers).length) { ask('开始一轮新练习？', '当前练习还有未答题目。开始新练习会替换当前轮次，已保存的答题记录、错题、收藏和笔记都会保留。', begin); } else begin().catch(report); }
-  async function choose(label) { const { s, q, answer } = sessionContext(); if (!q || answer) return; if (q.type === '多选题') { ui.draft = ui.draft.includes(label) ? ui.draft.filter(a => a !== label) : [...ui.draft, label]; render(); } else { ui.draft = [label]; await submit(); } }
-  async function submit() { const { s, b, q, answer } = sessionContext(); if (!q || answer || !ui.draft.length) return; const selected = [...ui.draft], right = C.correct(q, selected), now = new Date().toISOString(); s.answers[q.id] = { selected, correct: right, at: now }; s.complete = Object.keys(s.answers).length === s.ids.length; const r = ensureRecord(b, q); r.attempts++; r[right ? 'right' : 'wrong']++; r.lastCorrect = right; if (!right) r.inWrong = true; r.history.push({ at: now, correct: right, selected }); r.history = r.history.slice(-20); state.activity ||= {}; const today = state.activity[dateKey()] ||= { attempts: 0, right: 0 }; today.attempts++; today.right += right ? 1 : 0; await save(); render(); if (mobileScreen.matches) $('.answer-panel')?.scrollIntoView({ block: 'center', behavior: 'auto' }); if (right ? state.settings.autoCorrect : state.settings.autoWrong) { const session = s, current = q.id; clearTimeout(nextTimer); nextTimer = setTimeout(() => { if (ui.view === 'practice' && !$('#overlay').children.length && state.session === session && session.ids[session.index] === current) next().catch(report); }, 1600); } }
-  async function navigateQuestion(index) { ui.answerSheet = false; clearTimeout(nextTimer); clearTimeout(noteTimer); if (!state.session) return; state.session.index = Math.max(0, Math.min(index, state.session.ids.length - 1)); ui.draft = []; ui.showNote = false; ui.cardPage = Math.floor(state.session.index / 100); await save(); render(); window.scrollTo(0, 0); }
+  function latestPractice(b) {
+    if (!b) return null;
+    if (state.session?.bankId === b.id) return state.session;
+    return Object.values(state.practiceSessions || {}).filter(s => s.bankId === b.id).sort((a, b) => String(b.updatedAt || b.startedAt || '').localeCompare(String(a.updatedAt || a.startedAt || '')))[0] || null;
+  }
+  async function activatePractice(session) {
+    clearTimeout(nextTimer); clearTimeout(noteTimer);
+    C.rememberPractice(state);
+    const b = banks().find(b => b.id === session.bankId);
+    session = C.reconcilePractice(session, b);
+    if (!session) return toast('当前范围已没有题目，请重新选择。');
+    if (!session.filters.scope && ['wrong', 'favorite'].includes(session.mode)) {
+      const known = new Set(session.ids);
+      session.ids.push(...eligibleQuestions(b, session.mode, session.filters).filter(q => !known.has(q.id)).map(q => q.id));
+      session.complete = session.ids.every(id => session.answers[id]);
+    }
+    state.session = session; session.updatedAt = new Date().toISOString();
+    ui.bankId = session.bankId; state.selectedBank = session.bankId;
+    ui.draft = [...(session.drafts?.[session.ids[session.index]] || [])]; ui.showNote = false;
+    ui.cardPage = Math.floor(session.index / 100); ui.answerSheet = false;
+    ui.view = 'practice';
+    await save(); closeModal(); render(); window.scrollTo(0, 0);
+  }
+  async function startMode(mode, filters, newRound = false) {
+    const b = bank(); if (!b) return;
+    const saved = state.practiceSessions?.[C.practiceKey(b.id, mode, filters)];
+    if (saved && !newRound) return activatePractice(saved);
+    let qs = eligibleQuestions(b, mode, filters);
+    if (mode === 'random') {
+      if (!Number.isInteger(filters.count) || filters.count < 1) return toast('题量需要填写大于 0 的整数。');
+      const unseen = qs.filter(q => !record(b, q).attempts);
+      qs = [...(unseen.length ? unseen : qs)];
+      for (let i = qs.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [qs[i], qs[j]] = [qs[j], qs[i]]; }
+      qs = qs.slice(0, filters.count);
+    }
+    if (!qs.length) return toast(mode === 'wrong' ? '这个题库还没有错题。' : mode === 'favorite' ? '这个题库还没有收藏题目。' : '所选范围没有题目，请换个条件。');
+    return requestSession(b, qs, mode, filters, newRound);
+  }
+  async function requestSession(b, qs, mode, filters = {}, restart = false) {
+    const saved = state.practiceSessions?.[C.practiceKey(b.id, mode, filters)];
+    if (saved && !restart) return activatePractice(saved);
+    if (!qs.length) return toast('当前范围没有题目。');
+    const firstUnseen = !restart && !['wrong', 'favorite'].includes(mode) ? qs.findIndex(q => !record(b, q).attempts) : 0;
+    const session = { bankId: b.id, ids: qs.map(q => q.id), mode, filters, index: Math.max(0, firstUnseen), answers: {}, drafts: {}, startedAt: new Date().toISOString(), complete: false };
+    return activatePractice(session);
+  }
+  function restartPractice() {
+    const { s, b } = sessionContext(); if (!s || !b) return;
+    ask('重新练习当前范围？', '仅重新开始当前范围，其他练习位置和累计答题记录、错题、收藏、笔记都会保留。', async () => {
+      const questions = new Map(b.questions.map(q => [q.id, q]));
+      await requestSession(b, s.ids.map(id => questions.get(id)).filter(Boolean), s.mode, s.filters, true);
+    });
+  }
+  async function choose(label) { const { s, q, answer } = sessionContext(); if (!q || answer) return; if (q.type === '多选题') { ui.draft = ui.draft.includes(label) ? ui.draft.filter(a => a !== label) : [...ui.draft, label]; s.drafts ||= {}; s.drafts[q.id] = [...ui.draft]; s.updatedAt = new Date().toISOString(); await save(); render(); } else { ui.draft = [label]; await submit(); } }
+  async function submit() { const { s, b, q, answer } = sessionContext(); if (!q || answer || !ui.draft.length) return; const selected = [...ui.draft], right = C.correct(q, selected), now = new Date().toISOString(); s.answers[q.id] = { selected, correct: right, at: now }; s.complete = Object.keys(s.answers).length === s.ids.length; delete s.drafts?.[q.id]; s.updatedAt = now; const r = ensureRecord(b, q); r.attempts++; r[right ? 'right' : 'wrong']++; r.lastCorrect = right; if (!right) r.inWrong = true; r.history.push({ at: now, correct: right, selected }); r.history = r.history.slice(-20); state.activity ||= {}; const today = state.activity[dateKey()] ||= { attempts: 0, right: 0 }; today.attempts++; today.right += right ? 1 : 0; await save(); render(); if (mobileScreen.matches) $('.answer-panel')?.scrollIntoView({ block: 'center', behavior: 'auto' }); if (right ? state.settings.autoCorrect : state.settings.autoWrong) { const session = s, current = q.id; clearTimeout(nextTimer); nextTimer = setTimeout(() => { if (ui.view === 'practice' && !$('#overlay').children.length && state.session === session && session.ids[session.index] === current) next().catch(report); }, 1600); } }
+  async function navigateQuestion(index) { ui.answerSheet = false; clearTimeout(nextTimer); clearTimeout(noteTimer); if (!state.session) return; state.session.index = Math.max(0, Math.min(index, state.session.ids.length - 1)); ui.draft = [...(state.session.drafts?.[state.session.ids[state.session.index]] || [])]; state.session.updatedAt = new Date().toISOString(); ui.showNote = false; ui.cardPage = Math.floor(state.session.index / 100); await save(); render(); window.scrollTo(0, 0); }
   async function next() { const { s } = sessionContext(); if (!s) return; if (s.index === s.ids.length - 1) { clearTimeout(nextTimer); ui.view = 'complete'; render(); window.scrollTo(0, 0); } else await navigateQuestion(s.index + 1); }
   async function toggleFavorite(b, q) { const r = ensureRecord(b, q); r.favorite = !r.favorite; await save(); render(); toast(r.favorite ? '已加入收藏。' : '已取消收藏。'); }
   const examAnswered = exam => Object.values(exam.answers).filter(a => a.length).length;
@@ -487,7 +545,7 @@
     return pageHead('EXAM RESULT', '考试成绩', esc(exam.bankName), '<button class="button" data-action="nav" data-view="exams">考试记录</button>') + '<section class="exam-result-card"><div class="eyebrow">' + (exam.autoSubmitted ? '考试到时 · 自动交卷' : '考试完成') + '</div><div class="exam-score ' + (r.passed ? 'good-text' : 'bad-text') + '">' + r.score + '<small>/ 100</small></div><h2>' + (r.passed ? '本次考试及格' : '继续巩固，下次进步') + '</h2><p class="help">及格线 ' + exam.passScore + ' 分 · 用时 ' + examTime(elapsed) + ' · ' + new Date(exam.finishedAt).toLocaleString('zh-CN') + '</p><div class="complete-stats"><div><strong class="good-text">' + r.right + '</strong><span>答对</span></div><div><strong class="bad-text">' + r.wrong + '</strong><span>答错</span></div><div><strong>' + r.unanswered + '</strong><span>未答</span></div></div><div class="exam-breakdown">' + C.TYPES.filter(type => r.byType[type].total).map(type => '<div><strong>' + type + '</strong><span>' + r.byType[type].total + ' 道</span><span>答对 ' + r.byType[type].right + ' · 答错 ' + r.byType[type].wrong + ' · 未答 ' + r.byType[type].unanswered + '</span></div>').join('') + '</div><p class="help exam-result-note">答错与未答题已加入错题本；已答题计入学习记录。每题等分，多选题全部选对才得分。</p><div class="exam-result-actions"><button class="button primary" data-action="exam-review" data-filter="">查看整卷解析</button><button class="button" data-action="exam-review" data-filter="wrong" ' + (!(r.wrong + r.unanswered) ? 'disabled' : '') + '>查看错题与未答</button><button class="button" data-action="nav" data-view="home">返回题库</button></div></section>';
   }
 
-  function settingsDialog() { const s = state.settings; modal('刷题设置', (cloud ? '<button class="account-setting" data-action="account"><strong>' + accountName() + ' · 账号与同步</strong><span class="cloud-status">' + cloudLabel() + '</span>' + icon('chevron') + '</button>' : '') + '<div class="setting-row theme-setting"><strong>界面主题</strong><p>为专注选择合适的背景</p><div class="theme-options">' + C.THEMES.map(([value, name]) => '<button class="theme-choice ' + (s.theme === value ? 'active' : '') + '" data-action="setting-theme" data-value="' + value + '" aria-pressed="' + (s.theme === value) + '"><span class="theme-swatch" data-palette="' + value + '" aria-hidden="true"></span>' + name + '</button>').join('') + '</div></div><div class="setting-row"><div><strong>题目字号</strong><p>同时调整题干与选项</p></div><div class="segment">' + [[16, '小'], [18, '中'], [20, '大'], [23, '特大']].map(([value, name]) => '<button class="' + (Number(s.font) === value ? 'active' : '') + '" data-action="setting-font" data-value="' + value + '">' + name + '</button>').join('') + '</div></div>' + [['autoCorrect', '答对自动下一题', '显示结果约 1.6 秒后切换'], ['autoWrong', '答错自动下一题', '建议关闭，留出时间理解错题'], ['analysis', '答题后显示解析', '提交前始终隐藏答案与解析'], ['notes', '显示已有笔记', '也可以在题目下方手动打开']].map(([key, title, description]) => '<label class="setting-row"><span><strong>' + title + '</strong><p>' + description + '</p></span><input class="toggle" type="checkbox" data-setting="' + key + '" ' + (s[key] ? 'checked' : '') + ' aria-label="' + title + '"></label>').join(''), (['practice', 'exam', 'exam-review'].includes(ui.view) && !desktopCard.matches ? '<button class="button" data-action="settings-card">打开答题卡</button>' : '') + '<button class="button primary" data-action="close-modal">完成</button>'); }
+  function settingsDialog() { const s = state.settings; modal('刷题设置', (ui.view === 'practice' ? '<div class="setting-row"><div><strong>当前练习进度</strong><p>已自动保存，重新进入会回到当前位置。</p></div><button class="button" data-action="restart-practice">重新练习</button></div>' + (['chapter', 'random', 'type', 'custom'].includes(state.session.mode) && !state.session.filters.scope ? '<button class="text-button" data-action="configure-mode" data-mode="' + state.session.mode + '">' + (state.session.mode === 'chapter' ? '选择章节' : '调整练习范围') + '</button>' : '') : '') + (cloud ? '<button class="account-setting" data-action="account"><strong>' + accountName() + ' · 账号与同步</strong><span class="cloud-status">' + cloudLabel() + '</span>' + icon('chevron') + '</button>' : '') + '<div class="setting-row theme-setting"><strong>界面主题</strong><p>为专注选择合适的背景</p><div class="theme-options">' + C.THEMES.map(([value, name]) => '<button class="theme-choice ' + (s.theme === value ? 'active' : '') + '" data-action="setting-theme" data-value="' + value + '" aria-pressed="' + (s.theme === value) + '"><span class="theme-swatch" data-palette="' + value + '" aria-hidden="true"></span>' + name + '</button>').join('') + '</div></div><div class="setting-row"><div><strong>题目字号</strong><p>同时调整题干与选项</p></div><div class="segment">' + [[16, '小'], [18, '中'], [20, '大'], [23, '特大']].map(([value, name]) => '<button class="' + (Number(s.font) === value ? 'active' : '') + '" data-action="setting-font" data-value="' + value + '">' + name + '</button>').join('') + '</div></div>' + [['autoCorrect', '答对自动下一题', '显示结果约 1.6 秒后切换'], ['autoWrong', '答错自动下一题', '建议关闭，留出时间理解错题'], ['analysis', '答题后显示解析', '提交前始终隐藏答案与解析'], ['notes', '显示已有笔记', '也可以在题目下方手动打开']].map(([key, title, description]) => '<label class="setting-row"><span><strong>' + title + '</strong><p>' + description + '</p></span><input class="toggle" type="checkbox" data-setting="' + key + '" ' + (s[key] ? 'checked' : '') + ' aria-label="' + title + '"></label>').join(''), (['practice', 'exam', 'exam-review'].includes(ui.view) && !desktopCard.matches ? '<button class="button" data-action="settings-card">打开答题卡</button>' : '') + '<button class="button primary" data-action="close-modal">完成</button>'); }
   function download(content, type, name) { const url = URL.createObjectURL(new Blob([content], { type })); const a = document.createElement('a'); a.href = url; a.download = name; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 10000); }
   async function restore(file) {
     if (!file) return;
@@ -500,13 +558,12 @@
     restored.settings = { ...defaultSettings, ...restored.settings };
     const n = restored.banks.reduce((s, b) => s + b.questions.length, 0);
     ask(canManageBanks() ? '恢复备份 · 将替换当前全部数据' : '恢复当前账号的学习记录', canManageBanks() ? '备份包含 <strong>' + restored.banks.length + ' 个题库、' + n + ' 道题目</strong>及学习记录。确认后会替换当前数据并同步，请先导出当前备份。' : '只替换当前账号的练习进度、错题、收藏、笔记和考试记录，共享题库由管理员维护。建议先导出当前备份。', async () => {
-      const old = state; state = restored; state.session = sanitizeSession(restored.session);
+      const old = state; state = restored; C.restorePractice(state);
       try { await save(); } catch (e) { state = old; throw e; }
       ui = { ...ui, view: 'home', bankId: state.selectedBank || banks()[0]?.id || '', query: '', type: '', chapter: '', collectionBank: '' };
       closeModal(); render(); examTick(); toast('备份已恢复。');
     });
   }
-  function sanitizeSession(s) { if (!s || !Array.isArray(s.ids) || !s.ids.length || !s.answers || typeof s.answers !== 'object' || !Number.isInteger(s.index) || s.index < 0 || s.index >= s.ids.length || !modes[s.mode]) return null; const b = banks().find(b => b.id === s.bankId); if (!b || new Set(s.ids).size !== s.ids.length || s.ids.some(id => !b.questions.some(q => q.id === id))) return null; for (const [id, a] of Object.entries(s.answers)) { const q = b.questions.find(q => q.id === id); if (!q || !s.ids.includes(id) || !Array.isArray(a.selected) || a.selected.some(x => !q.options.some(o => o.label === x)) || typeof a.correct !== 'boolean') return null; a.correct = C.correct(q, a.selected); } s.complete = Object.keys(s.answers).length === s.ids.length; return s; }
   function report(error) { console.error(error); toast(error.message || '操作没有完成，请重试。'); }
   async function perform(action, el) {
     if (accountLocked || accountBusy) return;
@@ -568,10 +625,13 @@
       case 'select-bank': ui.bankId = el.dataset.id; state.selectedBank = ui.bankId; await save(); ui.view = 'home'; render(); window.scrollTo(0, 0); break;
       case 'rename-bank': { const b = banks().find(b => b.id === el.dataset.id); modal('重命名题库', '<div class="form-field"><label for="bank-new-name">题库名称</label><input id="bank-new-name" maxlength="100" value="' + esc(b.name) + '"></div>', '<button class="button" data-action="close-modal">取消</button><button class="button primary" data-action="save-bank-name" data-id="' + esc(b.id) + '">保存</button>'); break; }
       case 'save-bank-name': { const name = $('#bank-new-name').value.trim(); if (!name) return toast('题库名称不能为空。'); banks().find(b => b.id === el.dataset.id).name = name; await save(); closeModal(); render(); break; }
-      case 'delete-bank': { const id = el.dataset.id, b = banks().find(b => b.id === id); if (state.activeExam?.bankId === id) return toast('这个题库有正在进行的考试，请先交卷再删除。'); ask('删除这个题库？', '将删除「' + esc(b.name) + '」及其全部练习记录、错题、收藏和笔记。建议先导出备份。', async () => { state.banks = banks().filter(b => b.id !== id); for (const k of Object.keys(state.records)) if (k.startsWith(id + '/')) delete state.records[k]; if (state.session?.bankId === id) state.session = null; if (ui.bankId === id) ui.bankId = banks()[0]?.id || ''; state.selectedBank = ui.bankId; await save(); closeModal(); render(); toast('题库已删除。'); }, true); break; }
-      case 'continue': { const s = state.session; if (s && s.bankId === bank()?.id && !s.complete) { ui.view = 'practice'; ui.draft = []; ui.cardPage = Math.floor(s.index / 100); render(); } else configure('sequential'); break; }
-      case 'mode': configure(el.dataset.mode); break;
-      case 'start-configured': startMode(el.dataset.mode, { chapter: $('#mode-chapter').value, type: $('#mode-type').value, status: $('#mode-status').value, count: $('#mode-count') ? Number($('#mode-count').value) : undefined }); break;
+      case 'delete-bank': { const id = el.dataset.id, b = banks().find(b => b.id === id); if (state.activeExam?.bankId === id) return toast('这个题库有正在进行的考试，请先交卷再删除。'); ask('删除这个题库？', '将删除「' + esc(b.name) + '」及其全部练习记录、错题、收藏和笔记。建议先导出备份。', async () => { state.banks = banks().filter(b => b.id !== id); for (const k of Object.keys(state.records)) if (k.startsWith(id + '/')) delete state.records[k]; if (state.session?.bankId === id) state.session = null; C.restorePractice(state); if (ui.bankId === id) ui.bankId = banks()[0]?.id || ''; state.selectedBank = ui.bankId; await save(); closeModal(); render(); toast('题库已删除。'); }, true); break; }
+      case 'continue': { const s = latestPractice(bank()); if (s) await activatePractice(s); else await configure('sequential'); break; }
+      case 'mode': await configure(el.dataset.mode); break;
+      case 'configure-mode': await configure(el.dataset.mode, true); break;
+      case 'restart-practice': restartPractice(); break;
+      case 'next-random-round': await startMode('random', state.session.filters, true); break;
+      case 'start-configured': await startMode(el.dataset.mode, { chapter: $('#mode-chapter').value, type: $('#mode-type').value, status: $('#mode-status').value, count: $('#mode-count') ? Number($('#mode-count').value) : undefined }); break;
       case 'choose': await choose(el.dataset.label); break;
       case 'submit': await submit(); break;
       case 'next': await next(); break;
@@ -581,14 +641,14 @@
       case 'card-next': ui.cardPage++; render(); break;
       case 'summary': ui.view = 'complete'; render(); window.scrollTo(0, 0); break;
       case 'resume-unanswered': { const s = state.session; s.index = s.ids.findIndex(id => !s.answers[id]); ui.view = 'practice'; await navigateQuestion(s.index); break; }
-      case 'retry-session-wrong': { const { s, b } = sessionContext(); requestSession(b, b.questions.filter(q => s.ids.includes(q.id) && s.answers[q.id] && !s.answers[q.id].correct), 'wrong'); break; }
+      case 'retry-session-wrong': { const { s, b } = sessionContext(); await requestSession(b, b.questions.filter(q => s.ids.includes(q.id) && s.answers[q.id] && !s.answers[q.id].correct), 'wrong', { scope: 'retry:' + C.practiceKey(s.bankId, s.mode, s.filters) }, true); break; }
       case 'favorite': { const { b, q } = sessionContext(); await toggleFavorite(b, q); break; }
       case 'toggle-note': ui.showNote = !ui.showNote; render(); if (ui.showNote) $('#question-note')?.focus(); break;
       case 'remove-wrong-current': { const { b, q } = sessionContext(); askRemoveWrong(b, q); break; }
       case 'list-favorite': { const b = banks().find(b => b.id === el.dataset.bank), q = b.questions.find(q => q.id === el.dataset.id); await toggleFavorite(b, q); break; }
       case 'list-remove-wrong': { const b = banks().find(b => b.id === el.dataset.bank), q = b.questions.find(q => q.id === el.dataset.id); askRemoveWrong(b, q); break; }
-      case 'practice-one': { const b = banks().find(b => b.id === el.dataset.bank), q = b.questions.find(q => q.id === el.dataset.id); requestSession(b, [q], ui.view === 'wrong' ? 'wrong' : ui.view === 'favorite' ? 'favorite' : 'custom'); break; }
-      case 'practice-filtered': { const qs = visibleQuestions(); if (!qs.length) break; const uniqueBanks = new Set(qs.map(x => x.b.id)); if (uniqueBanks.size > 1) return toast('请先选择一个题库，再练习筛选结果。'); requestSession(qs[0].b, qs.map(x => x.q), ui.view === 'wrong' ? 'wrong' : ui.view === 'favorite' ? 'favorite' : 'custom'); break; }
+      case 'practice-one': { const b = banks().find(b => b.id === el.dataset.bank), q = b.questions.find(q => q.id === el.dataset.id); await requestSession(b, [q], ui.view === 'wrong' ? 'wrong' : ui.view === 'favorite' ? 'favorite' : 'custom', { scope: 'one:' + ui.view + ':' + q.id }); break; }
+      case 'practice-filtered': { const qs = visibleQuestions(); if (!qs.length) break; const uniqueBanks = new Set(qs.map(x => x.b.id)); if (uniqueBanks.size > 1) return toast('请先选择一个题库，再练习筛选结果。'); await requestSession(qs[0].b, qs.map(x => x.q), ui.view === 'wrong' ? 'wrong' : ui.view === 'favorite' ? 'favorite' : 'custom', { scope: JSON.stringify(['collection', ui.view, ui.query, ui.type, ui.chapter, ui.status]) }); break; }
       case 'list-prev': ui.listPage--; render(); window.scrollTo(0, 0); break;
       case 'list-next': ui.listPage++; render(); window.scrollTo(0, 0); break;
       case 'settings': settingsDialog(); break;
@@ -726,7 +786,7 @@
   window.addEventListener('beforeunload', () => { if (noteTimer) { clearTimeout(noteTimer); save().catch(() => {}); } });
   function freshState(withSeed) {
     const questions = withSeed ? C.inspect(C.parseCSV(window.QUIZ_SEED_CSV || C.template())).filter(r => r.q && !r.duplicate).map(r => r.q) : [];
-    return { version: 1, banks: withSeed ? [{ id: 'builtin-theory', name: '计算机程序设计员 · 三级', questions, createdAt: new Date().toISOString() }] : [], records: {}, session: null, settings: { ...defaultSettings }, activity: {}, selectedBank: withSeed ? 'builtin-theory' : '', exams: [], activeExam: null };
+    return { version: 1, banks: withSeed ? [{ id: 'builtin-theory', name: '计算机程序设计员 · 三级', questions, createdAt: new Date().toISOString() }] : [], records: {}, session: null, practiceSessions: {}, practiceLast: {}, settings: { ...defaultSettings }, activity: {}, selectedBank: withSeed ? 'builtin-theory' : '', exams: [], activeExam: null };
   }
   async function loadAccount(user) {
     await saveQueue;
@@ -744,7 +804,7 @@
     }
     state = saved ? C.validateState(saved) : freshState(cloudClient.isAdmin);
     state.settings = { ...defaultSettings, ...state.settings }; state.exams ||= []; state.activeExam ||= null; state.activity ||= dailyData();
-    state.session = sanitizeSession(state.session);
+    C.restorePractice(state);
     ui = { view: 'home', bankId: state.selectedBank || banks()[0]?.id || '', query: '', type: '', chapter: '', listPage: 0, draft: [], showNote: false, cardPage: 0, collectionBank: '' };
     pendingImport = null; editorIndex = null; confirmAction = null;
     if (db) await persistLocal();
@@ -760,7 +820,7 @@
     state = freshState(!cloudConfig.enabled || !!cloudClient?.isAdmin);
     try { await save(); } catch (e) { report(e); }
   }
-  state.settings = { ...defaultSettings, ...state.settings }; state.activity ||= dailyData(); state.session = sanitizeSession(state.session); ui.bankId = state.selectedBank || banks()[0]?.id || ''; ui.collectionBank = ''; state.exams ||= []; state.activeExam ||= null; initCloud(); render(); examTick(); setInterval(examTick, 500); if (cloud && !accountLocked) cloud.run();
+  state.settings = { ...defaultSettings, ...state.settings }; state.activity ||= dailyData(); C.restorePractice(state); ui.bankId = state.selectedBank || banks()[0]?.id || ''; ui.collectionBank = ''; state.exams ||= []; state.activeExam ||= null; initCloud(); render(); examTick(); setInterval(examTick, 500); if (cloud && !accountLocked) cloud.run();
   if ('serviceWorker' in navigator && window.isSecureContext && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   if (!storageOK) toast('本地存储不可用。你仍可练习，但请在关闭前导出完整备份。');
 })();

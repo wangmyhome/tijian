@@ -103,3 +103,22 @@ test('a refresh finishing after account switching cannot restore the previous ac
   await assert.rejects(refreshing, /账号已退出或切换/);
   assert.equal(JSON.parse(storage.getItem(client.key)).user.id, 'learner-id');
 });
+
+test('independent practice positions and random order sync after offline edits and rebind on the second device', async () => {
+  const remote = server(), a = device(remote); await a.sync.run();
+  const question = a.state.banks[0].questions[0];
+  a.state.banks[0].questions.push({ ...structuredClone(question), id: 'second', text: '第二题' });
+  const round = (mode, index, extra = {}) => ({ bankId: 'b', mode, filters: {}, ids: [question.id, 'second'], index, answers: {}, drafts: {}, startedAt: '2026-11-18T01:00:00.000Z', complete: false, ...extra });
+  a.state.session = round('sequential', 1); C.rememberPractice(a.state);
+  a.state.session = round('random', 0, { filters: { count: 2 }, ids: ['second', question.id] }); C.rememberPractice(a.state);
+  remote.fail = true; a.sync.changed(); await a.sync.run(); assert.equal(a.meta.dirty, true);
+  remote.fail = false; await a.sync.run();
+  const b = device(remote); await b.sync.run(); C.restorePractice(b.state);
+  assert.equal(b.state.practiceSessions[C.practiceKey('b', 'sequential')].index, 1);
+  assert.deepEqual(b.state.practiceSessions[C.practiceKey('b', 'random', { count: 2 })].ids, ['second', question.id]);
+  assert.equal(b.state.session, b.state.practiceSessions[C.practiceKey('b', 'random', { count: 2 })]);
+  b.state.session.index = 1; C.rememberPractice(b.state); b.sync.changed(); await b.sync.run();
+  await a.sync.run(); C.restorePractice(a.state);
+  assert.equal(a.state.session.index, 1);
+  assert.equal(a.state.practiceSessions[C.practiceKey('b', 'sequential')].index, 1);
+});
