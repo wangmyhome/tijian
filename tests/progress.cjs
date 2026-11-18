@@ -49,16 +49,16 @@ const { pathToFileURL } = require('node:url');
     await page.locator('.answer-panel.bad').waitFor();
     assert.match(await page.locator('.focus-save').innerText(), /已保存到本机/);
     await home();
-    for (const mode of ['sequential', 'random', 'chapter', 'type']) {
+    for (const mode of ['sequential', 'random']) {
       assert.equal(await page.locator('[data-mode=' + mode + '] .mode-progress').innerText(), '已练 2 / 未练 2');
     }
     for (const mode of ['wrong', 'favorite']) {
       assert.equal(await page.locator('[data-mode=' + mode + '] .mode-progress').innerText(), '已练 1 / 未练 0');
     }
-    await page.locator('[data-action=mode][data-mode=type]').click();
-    await page.locator('#mode-type').selectOption('多选题');
-    assert.match(await page.locator('#mode-type option:checked').innerText(), /已练 2 \/ 未练 0/);
-    await start();
+    for (const mode of ['chapter', 'type']) assert.equal(await page.locator('[data-action=mode][data-mode=' + mode + ']').count(), 0);
+    assert.equal(await page.locator('[data-mode=multiple] .mode-progress').innerText(), '已练 2 / 未练 0');
+    for (const mode of ['single', 'judgment']) assert.equal(await page.locator('[data-mode=' + mode + '] .mode-progress').innerText(), '已练 0 / 未练 1');
+    await start('multiple');
     await assertFreshHistory('已练正确题');
     await page.screenshot({ path: '/tmp/tijian-cross-mode-progress.png', fullPage: true });
     // Re-answering increases attempts without counting the same question twice.
@@ -74,11 +74,12 @@ const { pathToFileURL } = require('node:url');
     assert.equal(await page.locator('[data-mode=sequential] .mode-progress').innerText(), '已练 2 / 未练 2');
     console.log('PASS: cross-mode history, unique progress and attempts persist after reload');
 
-    await page.locator('[data-action=mode][data-mode=chapter]').click();
+    await page.locator('[data-action=mode][data-mode=random]').click();
     await page.locator('#mode-chapter').selectOption('第一章');
     await page.locator('#mode-status').selectOption('done');
     await start();
-    await assertFreshHistory('已练正确题');
+    assert.equal(await page.locator('.number-button.historical').count(), 2);
+    assert.equal(await page.locator('.answer-panel').count(), 0);
     assert.match(await page.locator('.question-count').innerText(), /\/ 2/);
     await home();
     await page.locator('[data-action=mode][data-mode=random]').click();
@@ -86,7 +87,8 @@ const { pathToFileURL } = require('node:url');
     await start();
     assert.equal(await page.locator('.number-button.historical').count(), 2);
     await home();
-    await page.locator('[data-action=mode][data-mode=type]').click();
+    await page.locator('[data-action=mode][data-mode=random]').click();
+    await page.locator('#mode-type').selectOption('多选题');
     await page.locator('#mode-type').selectOption('多选题');
     await page.locator('#mode-status').selectOption('new');
     assert(await page.locator('[data-action=start-configured]').isDisabled());
@@ -110,7 +112,7 @@ const { pathToFileURL } = require('node:url');
     await page.locator('#collection-status').selectOption('new');
     assert.equal(await page.locator('.question-item').count(), 2);
     assert.equal(await page.locator('.question-item .history-badge[data-practiced=false]').count(), 2);
-    console.log('PASS: chapter, type, random, wrong, favorite and search share practice status');
+    console.log('PASS: direct type practice, random filters, wrong, favorite and search share practice status');
 
     const themes = [
       ['classic-light', '明亮', 'rgb(246, 247, 249)'],
