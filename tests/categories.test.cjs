@@ -42,6 +42,26 @@ test('existing cloud banks gain only missing metadata when IDs and question cont
   assert.equal(custom.category, '自定义分类'); assert.equal(changed.category, undefined);
 });
 
+test('category corrections update only matching category fields and preserve learning records', () => {
+  const source = classified().slice(0, 3).map(r => r.q);
+  const questions = source.map(q => structuredClone(q));
+  questions[0].category = '旧一级'; questions[1].subcategory = '旧二级';
+  questions[2].category = '旧一级'; questions[2].text += '（内容不同，不迁移）';
+  const records = { ['b/' + questions[0].id]: { attempts: 3, right: 1, wrong: 2, lastCorrect: false, favorite: true, inWrong: true, note: '保留', history: [{ selected: ['B'], correct: false, at: '2026-11-18' }] } };
+  const beforeRecords = structuredClone(records), beforeQuestions = questions.map(q => structuredClone(q));
+  const result = C.applyCategoryCorrections([{ id: 'b', questions }], source);
+  assert.deepEqual(result, { changed: 2, skipped: 1 });
+  assert.equal(questions[0].category, source[0].category); assert.equal(questions[0].subcategory, beforeQuestions[0].subcategory);
+  assert.equal(questions[1].category, beforeQuestions[1].category); assert.equal(questions[1].subcategory, source[1].subcategory);
+  assert.equal(questions[2].category, '旧一级'); assert.equal(questions[2].text, beforeQuestions[2].text);
+  for (const i of [0, 1]) {
+    const before = { ...beforeQuestions[i] }; delete before.category; delete before.subcategory;
+    const after = { ...questions[i] }; delete after.category; delete after.subcategory;
+    assert.deepEqual(after, before);
+  }
+  assert.deepEqual(records, beforeRecords);
+});
+
 test('category checkpoints stay separate through serialization and category changes prune only moved questions', () => {
   const questions = classified().slice(0, 3).map(r => r.q), bank = { id: 'b', name: 'test', questions };
   const s = { bankId: 'b', mode: 'category', filters: { category: questions[0].category }, ids: questions.map(q => q.id), index: 1, answers: { [questions[0].id]: { selected: questions[0].answer } }, drafts: { [questions[1].id]: ['B'] } };

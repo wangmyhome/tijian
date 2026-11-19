@@ -118,9 +118,15 @@
     syncBackups = next;
   }
   function canApplyCloud() { return !accountLocked && !['practice', 'exam', 'exam-review'].includes(ui.view) && !$('#overlay').children.length && document.activeElement?.tagName !== 'TEXTAREA'; }
+  function applySeedCategoryCorrections() {
+    if (!state || (cloudConfig.enabled && !cloudClient?.isAdmin)) return { changed: 0, skipped: 0 };
+    const result = C.applyCategoryCorrections(state.banks, seedQuestions);
+    if (result.changed && cloudClient?.isAdmin && cloudClient.session?.user?.id) Object.assign(cloudMeta, { userId: cloudClient.session.user.id, dirty: true, banksDirty: true });
+    return result;
+  }
   async function applyCloud(payload, meta) {
     state = structuredClone(payload); state.settings = { ...defaultSettings, ...state.settings }; state.exams ||= []; state.activeExam ||= null;
-    cloudMeta = meta; C.fillCategories(state.banks, seedQuestions); C.restorePractice(state);
+    cloudMeta = meta; C.fillCategories(state.banks, seedQuestions); applySeedCategoryCorrections(); C.restorePractice(state);
     if (!banks().some(b => b.id === state.selectedBank)) state.selectedBank = banks()[0]?.id || '';
     ui.bankId = state.selectedBank; ui.draft = []; ui.showNote = false;
     await persistLocal(); render();
@@ -618,7 +624,7 @@
     restored.settings = { ...defaultSettings, ...restored.settings };
     const n = restored.banks.reduce((s, b) => s + b.questions.length, 0);
     ask(canManageBanks() ? '恢复备份 · 将替换当前全部数据' : '恢复当前账号的学习记录', canManageBanks() ? '备份包含 <strong>' + restored.banks.length + ' 个题库、' + n + ' 道题目</strong>及学习记录。确认后会替换当前数据并同步，请先导出当前备份。' : '只替换当前账号的练习进度、错题、收藏、笔记和考试记录，共享题库由管理员维护。建议先导出当前备份。', async () => {
-      const old = state; state = restored; C.fillCategories(state.banks, seedQuestions); C.restorePractice(state);
+      const old = state; state = restored; C.fillCategories(state.banks, seedQuestions); applySeedCategoryCorrections(); C.restorePractice(state);
       try { await save(); } catch (e) { state = old; throw e; }
       ui = { ...ui, view: 'home', bankId: state.selectedBank || banks()[0]?.id || '', query: '', type: '', chapter: '', collectionBank: '' };
       closeModal(); render(); examTick(); toast('备份已恢复。');
@@ -881,7 +887,7 @@
     }
     state = saved ? C.validateState(saved) : freshState(cloudClient.isAdmin);
     state.settings = { ...defaultSettings, ...state.settings }; state.exams ||= []; state.activeExam ||= null; state.activity ||= dailyData();
-    C.fillCategories(state.banks, seedQuestions); C.restorePractice(state);
+    C.fillCategories(state.banks, seedQuestions); applySeedCategoryCorrections(); C.restorePractice(state);
     ui = { view: 'home', bankId: state.selectedBank || banks()[0]?.id || '', query: '', type: '', chapter: '', listPage: 0, draft: [], showNote: false, cardPage: 0, collectionBank: '' };
     pendingImport = null; editorIndex = null; confirmAction = null;
     if (db) await persistLocal();
@@ -897,7 +903,7 @@
     state = freshState(!cloudConfig.enabled || !!cloudClient?.isAdmin);
     try { await save(); } catch (e) { report(e); }
   }
-  state.settings = { ...defaultSettings, ...state.settings }; state.activity ||= dailyData(); C.fillCategories(state.banks, seedQuestions); C.restorePractice(state); ui.bankId = state.selectedBank || banks()[0]?.id || ''; ui.collectionBank = ''; state.exams ||= []; state.activeExam ||= null; initCloud(); render(); examTick(); setInterval(examTick, 500); if (cloud && !accountLocked) cloud.run();
+  state.settings = { ...defaultSettings, ...state.settings }; state.activity ||= dailyData(); C.fillCategories(state.banks, seedQuestions); applySeedCategoryCorrections(); C.restorePractice(state); ui.bankId = state.selectedBank || banks()[0]?.id || ''; ui.collectionBank = ''; state.exams ||= []; state.activeExam ||= null; initCloud(); render(); examTick(); setInterval(examTick, 500); if (cloud && !accountLocked) cloud.run();
   if ('serviceWorker' in navigator && window.isSecureContext && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   if (!storageOK) toast('本地存储不可用。你仍可练习，但请在关闭前导出完整备份。');
 })();

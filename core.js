@@ -94,6 +94,20 @@
       q.category = source.category; q.subcategory = source.subcategory; q.number ||= source.number;
     }
   }
+  function applyCategoryCorrections(banks, reference) {
+    const byId = new Map(reference.map(q => [q.id, q]));
+    const result = { changed: 0, skipped: 0 };
+    for (const bank of banks) for (const q of bank.questions) {
+      const source = byId.get(q.id);
+      if (!source) continue;
+      if (signature(source) !== signature(q)) { result.skipped++; continue; }
+      if ((q.category || '') === (source.category || '') && (q.subcategory || '') === (source.subcategory || '')) continue;
+      q.category = source.category;
+      q.subcategory = source.subcategory;
+      result.changed++;
+    }
+    return result;
+  }
   function previousAnswers(state, bank, questions) {
     const answers = {};
     for (const q of questions) {
@@ -243,7 +257,7 @@
     if (s.activeExam != null) validateExam(s.activeExam);
     return s;
   }
-  const api = { TYPES, THEMES, hash, label, optionLabel, parseCSV, normalize, inspect, correct, signature, categoryOf, mergeBankQuestions, fillCategories, previousAnswers, previousDrafts, template, exportBank, validateState, examPaper, examResult, validateExam, practiceKey, practicePlace, reconcilePractice, rememberPractice, restorePractice };
+  const api = { TYPES, THEMES, hash, label, optionLabel, parseCSV, normalize, inspect, correct, signature, categoryOf, mergeBankQuestions, fillCategories, applyCategoryCorrections, previousAnswers, previousDrafts, template, exportBank, validateState, examPaper, examResult, validateExam, practiceKey, practicePlace, reconcilePractice, rememberPractice, restorePractice };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.QuizCore = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
