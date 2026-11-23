@@ -1,0 +1,57 @@
+
+@charset "utf-8";
+*{
+	margin:0;
+	padding:0;
+      list-style:none;
+}
+body{
+	font-family:"微软雅黑", "宋体";
+	font-size:12px;
+	color:#ccc;
+}
+select{width:100px;height:150px}
+      input[type=button]{width:50px}
+      #opt{margin:90px 10px 0}
+      .box{width:80%;margin:0 ;background-color:#999999}
+      .box div{float:left}
+
+
+/* float */
+.float{
+        width:260px;
+	height:200px;
+	position:fixed;
+        top:200px;
+	border:1px solid #ccc;
+        
+}
+
+.float2{
+	width:240px;
+	height:180px;
+	position:relative;
+	padding:10px;}
+.float2  li{
+	width:100%;
+	height:22px;
+	line-height:22px;
+	text-align:left;
+}
+.float2 li a{
+	color:#444;
+	text-decoration:none;
+}
+.float2 li a:hover{
+	text-decoration:underline;
+	color:#000;
+}
+.bar{
+	width:25px;
+	height:105px;
+	position:absolute;
+	right:-25px;
+	top:-1px;
+	background:url(../images/bg.png) no-repeat;
+	display:block;
+}

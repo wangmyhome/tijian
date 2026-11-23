@@ -1,6 +1,7 @@
 (async function () {
   'use strict';
   const C = window.QuizCore;
+  const operations = window.TIJIAN_OPERATIONS || { units: [], tasks: [] };
   const $ = s => document.querySelector(s);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const paths = {
@@ -52,7 +53,7 @@
   let db, state, saveQueue = Promise.resolve(), storageOK = true, storageError = '';
   let ui = { view: 'home', bankId: '', query: '', type: '', chapter: '', listPage: 0, draft: [], showNote: false, cardPage: 0, sessionBankId: '', lastFocus: null };
   let pendingImport = null, editorIndex = null, previewPage = 0, confirmAction = null, editorFields = [];
-  let toastTimer, nextTimer, noteTimer, aiJob = null;
+  let toastTimer, nextTimer, noteTimer, operationNoteTimer, aiJob = null;
   function toast(message) { $('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 3800); }
   function openDB() { return new Promise((resolve, reject) => { const r = indexedDB.open('tijian-offline', 1); r.onupgradeneeded = () => r.result.createObjectStore('workspace'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); r.onblocked = () => reject(new Error('请关闭其他题间窗口后重试。')); }); }
   function readDB(key = 'main') { return new Promise((resolve, reject) => { const tx = db.transaction('workspace', 'readonly'); const r = tx.objectStore('workspace').get(key); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); }); }
@@ -125,7 +126,7 @@
     return result;
   }
   async function applyCloud(payload, meta) {
-    state = structuredClone(payload); state.settings = { ...defaultSettings, ...state.settings }; state.exams ||= []; state.activeExam ||= null;
+    state = structuredClone(payload); state.settings = { ...defaultSettings, ...state.settings }; state.exams ||= []; state.activeExam ||= null; state.operationProgress ||= {};
     cloudMeta = meta; C.fillCategories(state.banks, seedQuestions); applySeedCategoryCorrections(); C.restorePractice(state);
     if (!banks().some(b => b.id === state.selectedBank)) state.selectedBank = banks()[0]?.id || '';
     ui.bankId = state.selectedBank; ui.draft = []; ui.showNote = false;
@@ -136,7 +137,7 @@
     cloud = new window.QuizCloud.Sync({
       client: cloudClient, getState: () => state, getMeta: () => cloudMeta,
       validate: C.validateState, persist: persistLocal, archive: archiveSync, apply: applyCloud, canApply: canApplyCloud,
-      hasLocalData: () => !!(Object.keys(state.records).length || state.session || state.activeExam || state.exams.length || state.banks.length > 1 || state.banks.some(b => b.id !== 'builtin-theory' || b.name !== '计算机程序设计员 · 三级')),
+      hasLocalData: () => !!(Object.keys(state.records).length || Object.keys(state.operationProgress || {}).length || state.session || state.activeExam || state.exams.length || state.banks.length > 1 || state.banks.some(b => b.id !== 'builtin-theory' || b.name !== '计算机程序设计员 · 三级')),
       onStatus: updateCloudUI, onAuthRequired: () => { accountLocked = true; loginError = '登录已过期，请重新登录。本机记录已保留。'; closeModal(); render(); }
     });
     accountLocked = !cloud.client.session;
@@ -169,8 +170,8 @@
     if (accountLocked) return loginView();
     document.body.classList.remove('editing-note');
     document.body.classList.toggle('focus-mode', ['practice', 'exam', 'exam-review'].includes(ui.view));
-    const c = counts(), title = { home: '我的题库', history: '学习记录', wrong: '错题本', favorite: '我的收藏', manage: '数据与备份', search: '搜索题目', practice: '开始练习', more: '我的', complete: '练习小结', exams: '模拟考试', exam: '模拟考试', 'exam-result': '考试成绩', 'exam-review': '试卷回顾' }[ui.view];
-    $('#app').innerHTML = '<div class="app-shell"><aside class="sidebar"><div class="brand"><div class="brand-mark">间</div><div><div class="brand-name">题间</div><small>MAKE IT COUNT</small></div></div><div class="nav-label">学习空间</div><nav class="nav" aria-label="主导航">' + navButton('home', 'grid', '我的题库') + navButton('exams', 'clock', '模拟考试') + navButton('history', 'clock', '学习记录') + navButton('wrong', 'wrong', '错题本', c.wrong || '') + navButton('favorite', 'star', '我的收藏', c.favorite || '') + '</nav><div class="nav-divider"></div><div class="nav-label">工具</div><nav class="nav">' + navButton('manage', 'shield', '数据与备份') + '<button class="nav-button" data-action="template">' + icon('download') + '<span>下载题库模板</span></button></nav><div class="sidebar-foot"><div class="local-status"><i class="status-dot"></i>' + '<span class="save-indicator" role="status">' + esc(saveLabel()) + '</span>' + '</div><p>' + (storageError || (cloud ? '登录 ' + accountName() + ' · <span class="cloud-status">' + cloudLabel() + '</span>' : '专注当下的每一道题。<br>数据保存在当前浏览器中。')) + '</p><div class="profile"><div class="avatar">我</div><div><strong>我的学习空间</strong><small>' + (cloud ? '云端同步版' : '个人离线版') + '</small></div><button class="icon-button" title="刷题设置" aria-label="刷题设置" data-action="settings">' + icon('settings') + '</button></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumb">学习空间 <span>/</span><strong>' + title + '</strong></div><div class="top-actions"><span class="top-date">' + new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }) + '</span>' + (cloud ? '<button class="button account-button" data-action="account" aria-label="账号与同步">' + icon('shield') + '<span>' + accountName() + '</span></button>' : '') + '<button class="icon-button" title="刷题设置" aria-label="刷题设置" data-action="settings">' + icon('settings') + '</button><button class="button primary" data-action="import">' + icon('plus') + '导入题库</button></div></header><div class="content">' + (ui.view === 'more' ? moreView() : ui.view === 'exams' ? examsView() : ui.view === 'exam' ? examView() : ui.view === 'exam-review' ? examView(true) : ui.view === 'exam-result' ? examResultView() : ui.view === 'home' ? home() : ui.view === 'practice' ? practice() : ui.view === 'complete' ? complete() : ui.view === 'manage' ? manage() : ui.view === 'history' ? history() : collection()) + '</div></main></div>';
+    const c = counts(), title = { home: '我的题库', history: '学习记录', wrong: '错题本', favorite: '我的收藏', manage: '数据与备份', search: '搜索题目', practice: '开始练习', operations: '操作题训练', more: '我的', complete: '练习小结', exams: '模拟考试', exam: '模拟考试', 'exam-result': '考试成绩', 'exam-review': '试卷回顾' }[ui.view];
+    $('#app').innerHTML = '<div class="app-shell"><aside class="sidebar"><div class="brand"><div class="brand-mark">间</div><div><div class="brand-name">题间</div><small>MAKE IT COUNT</small></div></div><div class="nav-label">学习空间</div><nav class="nav" aria-label="主导航">' + navButton('home', 'grid', '我的题库') + navButton('exams', 'clock', '模拟考试') + navButton('operations', 'edit', '操作题训练') + navButton('history', 'clock', '学习记录') + navButton('wrong', 'wrong', '错题本', c.wrong || '') + navButton('favorite', 'star', '我的收藏', c.favorite || '') + '</nav><div class="nav-divider"></div><div class="nav-label">工具</div><nav class="nav">' + navButton('manage', 'shield', '数据与备份') + '<button class="nav-button" data-action="template">' + icon('download') + '<span>下载题库模板</span></button></nav><div class="sidebar-foot"><div class="local-status"><i class="status-dot"></i>' + '<span class="save-indicator" role="status">' + esc(saveLabel()) + '</span>' + '</div><p>' + (storageError || (cloud ? '登录 ' + accountName() + ' · <span class="cloud-status">' + cloudLabel() + '</span>' : '专注当下的每一道题。<br>数据保存在当前浏览器中。')) + '</p><div class="profile"><div class="avatar">我</div><div><strong>我的学习空间</strong><small>' + (cloud ? '云端同步版' : '个人离线版') + '</small></div><button class="icon-button" title="刷题设置" aria-label="刷题设置" data-action="settings">' + icon('settings') + '</button></div></div></aside><main class="main"><header class="topbar"><div class="breadcrumb">学习空间 <span>/</span><strong>' + title + '</strong></div><div class="top-actions"><span class="top-date">' + new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }) + '</span>' + (cloud ? '<button class="button account-button" data-action="account" aria-label="账号与同步">' + icon('shield') + '<span>' + accountName() + '</span></button>' : '') + '<button class="icon-button" title="刷题设置" aria-label="刷题设置" data-action="settings">' + icon('settings') + '</button><button class="button primary" data-action="import">' + icon('plus') + '导入题库</button></div></header><div class="content">' + (ui.view === 'more' ? moreView() : ui.view === 'exams' ? examsView() : ui.view === 'exam' ? examView() : ui.view === 'exam-review' ? examView(true) : ui.view === 'exam-result' ? examResultView() : ui.view === 'home' ? home() : ui.view === 'operations' ? operationsView() : ui.view === 'practice' ? practice() : ui.view === 'complete' ? complete() : ui.view === 'manage' ? manage() : ui.view === 'history' ? history() : collection()) + '</div></main></div>';
     syncMobileUI(); updateCloudUI();
     if (!canManageBanks()) document.querySelectorAll('[data-action]').forEach(el => { if (bankActions.has(el.dataset.action)) el.remove(); });
     if (cloud?.status === 'remote' && canApplyCloud()) cloud.schedule(0);
@@ -181,7 +182,7 @@
     return pageHead('MY STUDY SPACE', '我的', '学习记录、数据备份与个性设置。') + '<div class="mobile-profile"><div class="avatar">我</div><div><strong>我的学习空间</strong><span>' + (cloud ? accountName() + ' · <span class="cloud-status">' + cloudLabel() + '</span>' : '个人离线版 · 数据保存在当前设备') + '</span></div></div><div class="more-links">' + (cloud ? '<button data-action="account">' + icon('shield') + '<span><strong>账号与同步</strong><small class="cloud-status">' + cloudLabel() + '</small></span>' + icon('chevron') + '</button>' : '') + [['history', 'bars', '学习记录', '查看每日练习与累计成绩'], ['favorite', 'star', '我的收藏', '反复回顾值得记住的题目'], ['manage', 'shield', '数据与备份', '导出、恢复和跨设备迁移']].map(([view, glyph, title, detail]) => '<button data-action="nav" data-view="' + view + '">' + icon(glyph) + '<span><strong>' + title + '</strong><small>' + detail + '</small></span>' + icon('chevron') + '</button>').join('') + '<button data-action="settings">' + icon('settings') + '<span><strong>刷题设置</strong><small>主题、字号与作答习惯</small></span>' + icon('chevron') + '</button><button data-action="template">' + icon('download') + '<span><strong>下载题库模板</strong><small>支持单选、多选、判断与任意数量选项</small></span>' + icon('chevron') + '</button></div><p class="footer-note"><span class="save-indicator" role="status">' + esc(saveLabel()) + '</span></p>';
   }
   function mobileNavigation() {
-    const active = ['history', 'manage', 'more'].includes(ui.view) ? 'more' : ui.view;
+    const active = ['history', 'manage', 'more'].includes(ui.view) ? 'more' : ui.view === 'operations' ? 'home' : ui.view;
     return '<nav class="mobile-nav" aria-label="手机主导航">' + [['home', 'book', '题库'], ['exams', 'clock', '考试'], ['wrong', 'wrong', '错题'], ['favorite', 'star', '收藏'], ['more', 'grid', '我的']].map(([view, glyph, title]) => '<button data-action="nav" data-view="' + view + '" ' + (active === view ? 'aria-current="page"' : '') + '>' + icon(glyph) + '<span>' + title + '</span></button>').join('') + '</nav>';
   }
   function syncReadingMode() { document.body.classList.toggle('reading-mode', ['practice', 'exam', 'exam-review'].includes(ui.view)); document.body.dataset.answerView = ui.view; }
@@ -238,7 +239,7 @@
       const saved = savedPractice(b, m), configurable = ['chapter', 'random', 'type', 'custom'].includes(m);
       html += '<div class="mode-entry' + (configurable ? ' has-range' : '') + '"><button class="mode" data-action="mode" data-mode="' + m + '"><span class="mode-icon">' + icon(glyph) + '</span><span><strong>' + (m === 'exam' ? '模拟考试' : modes[m]) + '</strong><small>' + description + '</small><span class="mode-progress">' + modeProgress(b, m) + '</span>' + (saved ? '<span class="mode-resume">' + (saved.complete ? '本轮已完成 · 查看答案' : '继续第 ' + (saved.index + 1) + ' / ' + saved.ids.length + ' 题') + '</span>' : '') + '</span></button>' + (configurable ? '<button class="mode-range" data-action="configure-mode" data-mode="' + m + '">' + (m === 'chapter' ? '选择章节' : '调整范围') + '</button>' : '') + '</div>';
     }
-    html += '</div>' + categoryCards(b) + (state.activeExam ? '<div class="exam-resume-banner"><div><strong>模拟考试进行中</strong><span>已答 ' + examAnswered(state.activeExam) + ' / ' + state.activeExam.questions.length + ' 道 · 剩余 <span class="exam-clock" role="timer">' + examTime(examRemaining(state.activeExam)) + '</span></span></div><button class="button primary" data-action="exam-resume">继续考试</button></div>' : '') + '</section><aside class="dashboard-aside">' + weekly() + '<div class="aside-card"><h3>温故知新</h3><button class="quick-link" data-action="nav" data-view="wrong">' + icon('wrong') + '我的错题<strong>' + c.wrong + '</strong>' + icon('chevron') + '</button><button class="quick-link" data-action="nav" data-view="favorite">' + icon('star') + '我的收藏<strong>' + c.favorite + '</strong>' + icon('chevron') + '</button></div><div class="tip"><strong>' + icon('info') + '给专注留一点空间</strong>选项支持键盘 <span class="kbd">A–Z</span> 选择；<span class="kbd">Enter</span> 提交或下一题。答错后停一停，看懂比刷快更重要。</div></aside></div><section class="library-section"><div class="section-heading"><h2>全部题库 <span style="margin-left:8px">' + banks().length + '</span></h2><label class="search">' + icon('search') + '<input id="bank-search" type="search" placeholder="搜索题库名称…" aria-label="搜索题库"></label></div><div class="bank-list" id="bank-list">' + bankRows('') + '</div></section><p class="footer-note">' + icon('shield') + '无需联网，安心练习。记得定期导出备份。</p>';
+    html += '</div>' + operationHomeCard() + categoryCards(b) + (state.activeExam ? '<div class="exam-resume-banner"><div><strong>模拟考试进行中</strong><span>已答 ' + examAnswered(state.activeExam) + ' / ' + state.activeExam.questions.length + ' 道 · 剩余 <span class="exam-clock" role="timer">' + examTime(examRemaining(state.activeExam)) + '</span></span></div><button class="button primary" data-action="exam-resume">继续考试</button></div>' : '') + '</section><aside class="dashboard-aside">' + weekly() + '<div class="aside-card"><h3>温故知新</h3><button class="quick-link" data-action="nav" data-view="wrong">' + icon('wrong') + '我的错题<strong>' + c.wrong + '</strong>' + icon('chevron') + '</button><button class="quick-link" data-action="nav" data-view="favorite">' + icon('star') + '我的收藏<strong>' + c.favorite + '</strong>' + icon('chevron') + '</button></div><div class="tip"><strong>' + icon('info') + '给专注留一点空间</strong>选项支持键盘 <span class="kbd">A–Z</span> 选择；<span class="kbd">Enter</span> 提交或下一题。答错后停一停，看懂比刷快更重要。</div></aside></div><section class="library-section"><div class="section-heading"><h2>全部题库 <span style="margin-left:8px">' + banks().length + '</span></h2><label class="search">' + icon('search') + '<input id="bank-search" type="search" placeholder="搜索题库名称…" aria-label="搜索题库"></label></div><div class="bank-list" id="bank-list">' + bankRows('') + '</div></section><p class="footer-note">' + icon('shield') + '无需联网，安心练习。记得定期导出备份。</p>';
     return html;
   }
   function categoryCards(b) {
@@ -248,6 +249,37 @@
       const c = progress(b, qs), saved = state.practiceSessions?.[C.practiceKey(b.id, 'category', { category: name })];
       return '<button class="category-card" data-action="practice-category" data-category="' + esc(name) + '"><span class="category-card-top"><span class="mode-icon">' + icon('chapter') + '</span><span>' + qs.length + ' 道</span></span><strong>' + esc(name) + '</strong><span class="category-stats">已练 ' + c.done + ' · 未练 ' + c.remaining + '</span><span class="progress-track"><span class="progress-fill" style="width:' + (c.done / c.total * 100) + '%"></span></span><span class="category-resume">' + (saved ? '继续第 ' + (saved.index + 1) + ' / ' + saved.ids.length + ' 题' : '开始练习') + icon('arrow') + '</span></button>';
     }).join('') + '</div></section>';
+  }
+  function operationProgress(id) { return state.operationProgress?.[id] || { status: 'not-started', note: '' }; }
+  function operationCounts(tasks) {
+    const done = tasks.filter(task => operationProgress(task.id).status === 'done').length;
+    const active = tasks.filter(task => operationProgress(task.id).status === 'in-progress').length;
+    return { total: tasks.length, done, active, remaining: tasks.length - done };
+  }
+  function operationStatusLabel(status) { return ({ 'not-started': '未开始', 'in-progress': '练习中', done: '已完成' })[status] || '未开始'; }
+  function operationHomeCard() {
+    const count = operationCounts(operations.tasks), latest = operations.tasks.find(task => operationProgress(task.id).status === 'in-progress');
+    return '<section class="operation-home-section"><div class="section-heading"><h2>操作题训练</h2><span>40 道 · 8 个模块 · 进度按账号保存</span></div><button class="operation-home-card" data-action="operations-home"><span class="mode-icon">' + icon('edit') + '</span><span class="operation-home-copy"><strong>' + (latest ? '继续 ' + esc(latest.id) + ' · ' + esc(latest.title) : '开始操作题练习') + '</strong><small>设计建模、SQL、Web、Java 调试与测试验证</small><span class="operation-home-progress">已完成 ' + count.done + ' / ' + count.total + ' 道' + (count.active ? ' · 练习中 ' + count.active + ' 道' : '') + '</span></span><span class="operation-home-action">进入训练 ' + icon('arrow') + '</span></button></section>';
+  }
+  function operationFiles(links) {
+    if (!links.length) return '<p class="operation-empty-file">暂无附加文件</p>';
+    return '<div class="operation-file-list">' + links.map(file => '<a class="operation-file" href="' + esc(file.path) + '" download><span class="operation-file-type">' + esc(file.kind.toUpperCase()) + '</span><span class="operation-file-name">' + esc(file.label) + '</span>' + icon('download') + '</a>').join('') + '</div>';
+  }
+  function operationsView() {
+    const allTasks = operations.tasks, total = operationCounts(allTasks), selectedTask = allTasks.find(task => task.id === ui.operationTask);
+    if (selectedTask) {
+      const rec = operationProgress(selectedTask.id), unit = operations.units.find(item => item.id === selectedTask.unit);
+      return pageHead('PRACTICAL TASK', '操作题 · ' + esc(selectedTask.id), esc(selectedTask.title), '<button class="button" data-action="operations-back">' + icon('left') + '返回列表</button>') + '<div class="operation-detail-meta"><span class="chip green">' + esc(selectedTask.groupTitle) + '</span><span>' + selectedTask.minutes + ' 分钟</span><span class="operation-status-text status-' + rec.status + '">' + operationStatusLabel(rec.status) + '</span></div><article class="operation-task-content"><h2>试题要求</h2><div class="operation-prompt">' + esc(selectedTask.prompt) + '</div></article><section class="operation-attachments"><div class="operation-section-heading"><div><h2>练习素材</h2><p>' + esc(unit?.description || selectedTask.groupDescription) + '</p></div></div>' + operationFiles(selectedTask.sourceLinks) + '</section><details class="operation-reference"><summary><span><strong>参考解答</strong><small>' + (selectedTask.referenceLinks.length ? '完成后再展开核对' : '此题未提供参考解答文件') + '</small></span><span class="reference-chevron">' + icon('chevron') + '</span></summary>' + (selectedTask.referenceLinks.length ? operationFiles(selectedTask.referenceLinks) : '<p class="operation-empty-file">目录中没有这道题的参考解答。可以先按要求完成，再对照原题评分点自查。</p>') + '</details><section class="operation-self-check"><div><h2>我的练习记录</h2><p>只对当前账号可见，并随登录账号同步。</p></div><div class="operation-status-control" role="group" aria-label="设置操作题进度">' + [['not-started', '未开始'], ['in-progress', '练习中'], ['done', '已完成']].map(([status, label]) => '<button class="' + (rec.status === status ? 'active' : '') + '" data-action="operation-status" data-id="' + esc(selectedTask.id) + '" data-status="' + status + '" aria-pressed="' + (rec.status === status) + '">' + label + '</button>').join('') + '</div><label class="operation-note-label" for="operation-note">个人笔记</label><textarea id="operation-note" data-id="' + esc(selectedTask.id) + '" maxlength="10000" placeholder="记录解题步骤、容易遗漏的评分点…">' + esc(rec.note) + '</textarea><span id="operation-note-status" role="status">' + (rec.note ? '已保存' : '输入后自动保存') + '</span></section>';
+    }
+    if (ui.operationUnit) {
+      const unit = operations.units.find(item => item.id === ui.operationUnit);
+      if (!unit) { ui.operationUnit = ''; return operationsView(); }
+      const tasks = allTasks.filter(task => task.unit === unit.id), query = (ui.operationQuery || '').trim().toLowerCase();
+      const filtered = tasks.filter(task => (!query || (task.id + ' ' + task.title + ' ' + task.prompt).toLowerCase().includes(query)) && (!ui.operationStatus || operationProgress(task.id).status === ui.operationStatus));
+      const count = operationCounts(tasks);
+      return pageHead('PRACTICAL TASKS', esc(unit.title), esc(unit.description), '<button class="button" data-action="operations-home">' + icon('left') + '全部模块</button>') + '<div class="operation-unit-summary"><strong>' + count.done + ' / ' + count.total + '</strong><span>已完成</span><span class="operation-summary-divider"></span><span>' + count.active + ' 道练习中</span><span>' + count.remaining + ' 道待练习</span></div><div class="operation-filters"><label class="search">' + icon('search') + '<input type="search" id="operation-search" value="' + esc(ui.operationQuery || '') + '" placeholder="搜索题号或题目名称" aria-label="搜索操作题"></label><select class="field-control" id="operation-status-filter" aria-label="筛选操作题进度"><option value="">全部进度</option><option value="not-started" ' + (ui.operationStatus === 'not-started' ? 'selected' : '') + '>未开始</option><option value="in-progress" ' + (ui.operationStatus === 'in-progress' ? 'selected' : '') + '>练习中</option><option value="done" ' + (ui.operationStatus === 'done' ? 'selected' : '') + '>已完成</option></select><span>' + filtered.length + ' / ' + tasks.length + ' 道</span></div><div class="operation-task-list">' + (filtered.length ? filtered.map(task => { const rec = operationProgress(task.id); return '<button class="operation-task-row" data-action="operation-task" data-id="' + esc(task.id) + '"><span class="operation-task-code">' + esc(task.id) + '</span><span class="operation-task-copy"><strong>' + esc(task.title) + '</strong><small>' + task.minutes + ' 分钟 · 素材 ' + Math.max(0, task.sourceLinks.length - 1) + ' 个 · 参考文件 ' + task.referenceLinks.length + ' 个</small></span><span class="operation-status-text status-' + rec.status + '">' + operationStatusLabel(rec.status) + '</span>' + icon('chevron') + '</button>'; }).join('') : '<div class="operation-no-results">没有符合条件的操作题</div>') + '</div>';
+    }
+    return pageHead('PRACTICAL EXAM', '操作题训练', '按模块打开试题，下载素材并对照参考解答。练习状态和笔记会按账号保存。') + '<div class="operation-overview-stats"><div><strong>' + total.total + '</strong><span>操作题</span></div><div><strong>' + total.done + '</strong><span>已完成</span></div><div><strong>' + total.active + '</strong><span>练习中</span></div><div><strong>' + total.remaining + '</strong><span>待练习</span></div></div><div class="operation-unit-grid">' + operations.units.map(unit => { const tasks = allTasks.filter(task => task.unit === unit.id), count = operationCounts(tasks); return '<button class="operation-unit-card" data-action="operation-unit" data-unit="' + esc(unit.id) + '"><span class="operation-unit-top"><span class="mode-icon">' + icon('edit') + '</span><span>' + count.done + ' / ' + count.total + ' 已完成</span></span><strong>' + esc(unit.title) + '</strong><span class="operation-unit-description">' + esc(unit.description) + '</span><span class="progress-track"><span class="progress-fill" style="width:' + (count.done / count.total * 100) + '%"></span></span><span class="operation-unit-footer">' + (count.active ? count.active + ' 道练习中' : count.remaining + ' 道待练习') + icon('arrow') + '</span></button>'; }).join('') + '</div>';
   }
   function bankRows(query) { const list = banks().filter(b => b.name.toLowerCase().includes(query.toLowerCase())); if (!list.length) return '<div style="padding:25px;text-align:center" class="muted">没有找到这个题库</div>'; return list.map(b => { const c = counts([b]); return '<div class="bank-row"><div class="bank-cover">' + icon('book') + '</div><div class="grow"><button class="bank-title" data-action="select-bank" data-id="' + esc(b.id) + '">' + esc(b.name) + '</button><div class="bank-details">' + b.questions.length + ' 道题目 · ' + new Date(b.createdAt).toLocaleDateString('zh-CN') + ' 导入</div></div><div class="bank-progress">已练 ' + c.done + ' / ' + c.total + '<div class="progress-track"><div class="progress-fill" style="width:' + (c.total ? c.done / c.total * 100 : 0) + '%"></div></div></div><button class="button" data-action="select-bank" data-id="' + esc(b.id) + '">去练习' + icon('chevron') + '</button>' + (canManageBanks() ? '<div class="bank-actions">' + (canExportBanks() ? '<button class="icon-button" title="导出题库" aria-label="导出题库" data-action="export-bank" data-id="' + esc(b.id) + '">' + icon('download') + '</button>' : '') + '<button class="icon-button" title="重命名题库" aria-label="重命名题库" data-action="rename-bank" data-id="' + esc(b.id) + '">' + icon('edit') + '</button><button class="icon-button" title="删除题库" aria-label="删除题库" data-action="delete-bank" data-id="' + esc(b.id) + '">' + icon('trash') + '</button></div>' : '') + '</div>'; }).join(''); }
   function dailyData() { const all = {}; for (const r of Object.values(state.records)) for (const h of r.history || []) { const d = dateKey(h.at); all[d] ||= { attempts: 0, right: 0 }; all[d].attempts++; all[d].right += h.correct ? 1 : 0; } return all; }
@@ -661,7 +693,7 @@
       }
       case 'account-logout': {
         accountBusy = true; cloud.stop(); clearTimeout(nextTimer);
-        try { if (noteTimer) { clearTimeout(noteTimer); await save(); } await saveQueue; await cloud.running; await cloud.client.logout(); accountLocked = true; closeModal(); }
+        try { if (noteTimer || operationNoteTimer) { clearTimeout(noteTimer); clearTimeout(operationNoteTimer); await save(); } await saveQueue; await cloud.running; await cloud.client.logout(); accountLocked = true; closeModal(); }
         finally { accountBusy = false; render(); }
         break;
       }
@@ -683,6 +715,18 @@
       case 'exam-card-next': ui.examPage++; render(); break;
       case 'exam-result': ui.examId = el.dataset.id; ui.view = 'exam-result'; render(); window.scrollTo(0, 0); break;
       case 'exam-review': { const exam = currentExam(); if (!exam) break; ui.examFilter = el.dataset.filter; ui.examIndex = examIndices(exam, true)[0] || 0; ui.examPage = 0; ui.view = 'exam-review'; render(); window.scrollTo(0, 0); break; }
+      case 'operations-home': ui.view = 'operations'; ui.operationUnit = ''; ui.operationTask = ''; ui.operationQuery = ''; ui.operationStatus = ''; render(); window.scrollTo(0, 0); break;
+      case 'operation-unit': ui.view = 'operations'; ui.operationUnit = el.dataset.unit; ui.operationTask = ''; ui.operationQuery = ''; ui.operationStatus = ''; render(); window.scrollTo(0, 0); break;
+      case 'operation-task': ui.operationTask = el.dataset.id; render(); window.scrollTo(0, 0); break;
+      case 'operations-back': ui.operationTask = ''; render(); window.scrollTo(0, 0); break;
+      case 'operation-status': {
+        const taskId = el.dataset.id;
+        state.operationProgress ||= {};
+        state.operationProgress[taskId] ||= { status: 'not-started', note: '' };
+        state.operationProgress[taskId].status = el.dataset.status;
+        state.operationProgress[taskId].updatedAt = new Date().toISOString();
+        await save(); render(); break;
+      }
       case 'nav': ui.view = el.dataset.view; ui.query = ''; ui.type = ''; ui.chapter = ''; ui.status = ''; ui.collectionBank = ''; ui.listPage = 0; render(); window.scrollTo(0, 0); break;
       case 'search-view': ui.view = 'search'; ui.query = ''; ui.type = ''; ui.status = ''; ui.collectionBank = ''; ui.listPage = 0; render(); $('#question-search')?.focus(); break;
       case 'import': importDialog(); break;
@@ -817,6 +861,7 @@
       else if (el.id === 'home-bank') { ui.bankId = el.value; state.selectedBank = el.value; await save(); render(); }
       else if (el.id === 'collection-bank') { ui.collectionBank = el.value; ui.listPage = 0; render(); }
       else if (el.id === 'collection-status') { ui.status = el.value; ui.listPage = 0; render(); }
+      else if (el.id === 'operation-status-filter') { ui.operationStatus = el.value; render(); }
       else if (['mode-chapter', 'mode-type', 'mode-status'].includes(el.id)) updateModeProgress();
       else if (el.id === 'collection-type') { ui.type = el.value; ui.listPage = 0; render(); }
       else if (el.id === 'skip-invalid') { captureImport(); importPreview(); }
@@ -834,7 +879,9 @@
     if (/^exam-(count-\d|duration|pass)$/.test(el.id)) updateExamConfig();
     if (el.id === 'bank-search') $('#bank-list').innerHTML = bankRows(el.value);
     if (el.id === 'question-search') { const start = el.selectionStart; ui.query = el.value; ui.listPage = 0; render(); const target = $('#question-search'); target.focus(); target.setSelectionRange(start, start); }
+    if (el.id === 'operation-search') { const start = el.selectionStart; ui.operationQuery = el.value; const scroll = scrollY; render(); const target = $('#operation-search'); target?.focus(); target?.setSelectionRange(start, start); window.scrollTo(0, scroll); }
     if (el.id === 'question-note') { const { b, q } = sessionContext(); ensureRecord(b, q).note = el.value; $('#note-status').textContent = '正在保存…'; clearTimeout(noteTimer); noteTimer = setTimeout(() => save().then(() => { if ($('#note-status')) $('#note-status').textContent = '已保存'; }).catch(report), 350); }
+    if (el.id === 'operation-note') { const id = el.dataset.id; state.operationProgress ||= {}; state.operationProgress[id] ||= { status: 'not-started', note: '' }; state.operationProgress[id].note = el.value; state.operationProgress[id].updatedAt = new Date().toISOString(); if ($('#operation-note-status')) $('#operation-note-status').textContent = '正在保存…'; clearTimeout(operationNoteTimer); operationNoteTimer = setTimeout(() => save().then(() => { if ($('#operation-note-status')) $('#operation-note-status').textContent = '已保存'; }).catch(report), 350); }
     if (el.id === 'import-name') captureImport();
   });
   document.addEventListener('dragover', e => { const drop = e.target.closest('#drop-zone'); if (drop) { e.preventDefault(); drop.classList.add('dragging'); } });
@@ -868,10 +915,10 @@
   document.addEventListener('focusin', e => { if (e.target.id === 'question-note') document.body.classList.add('editing-note'); });
   document.addEventListener('focusout', e => { if (e.target.id === 'question-note') document.body.classList.remove('editing-note'); });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (state?.settings.theme === 'system') applyTheme(); });
-  window.addEventListener('beforeunload', () => { if (noteTimer) { clearTimeout(noteTimer); save().catch(() => {}); } });
+  window.addEventListener('beforeunload', () => { if (noteTimer || operationNoteTimer) { clearTimeout(noteTimer); clearTimeout(operationNoteTimer); save().catch(() => {}); } });
   function freshState(withSeed) {
     const questions = withSeed ? structuredClone(seedQuestions) : [];
-    return { version: 1, banks: withSeed ? [{ id: 'builtin-theory', name: '计算机程序设计员 · 三级', questions, createdAt: new Date().toISOString() }] : [], records: {}, session: null, practiceSessions: {}, practiceLast: {}, settings: { ...defaultSettings }, activity: {}, selectedBank: withSeed ? 'builtin-theory' : '', exams: [], activeExam: null };
+    return { version: 1, banks: withSeed ? [{ id: 'builtin-theory', name: '计算机程序设计员 · 三级', questions, createdAt: new Date().toISOString() }] : [], records: {}, session: null, practiceSessions: {}, practiceLast: {}, operationProgress: {}, settings: { ...defaultSettings }, activity: {}, selectedBank: withSeed ? 'builtin-theory' : '', exams: [], activeExam: null };
   }
   async function loadAccount(user) {
     await saveQueue;
@@ -888,7 +935,7 @@
       }
     }
     state = saved ? C.validateState(saved) : freshState(cloudClient.isAdmin);
-    state.settings = { ...defaultSettings, ...state.settings }; state.exams ||= []; state.activeExam ||= null; state.activity ||= dailyData();
+    state.settings = { ...defaultSettings, ...state.settings }; state.exams ||= []; state.activeExam ||= null; state.activity ||= dailyData(); state.operationProgress ||= {};
     C.fillCategories(state.banks, seedQuestions); applySeedCategoryCorrections(); C.restorePractice(state);
     ui = { view: 'home', bankId: state.selectedBank || banks()[0]?.id || '', query: '', type: '', chapter: '', listPage: 0, draft: [], showNote: false, cardPage: 0, collectionBank: '' };
     pendingImport = null; editorIndex = null; confirmAction = null;
@@ -905,7 +952,7 @@
     state = freshState(!cloudConfig.enabled || !!cloudClient?.isAdmin);
     try { await save(); } catch (e) { report(e); }
   }
-  state.settings = { ...defaultSettings, ...state.settings }; state.activity ||= dailyData(); C.fillCategories(state.banks, seedQuestions); applySeedCategoryCorrections(); C.restorePractice(state); ui.bankId = state.selectedBank || banks()[0]?.id || ''; ui.collectionBank = ''; state.exams ||= []; state.activeExam ||= null; initCloud(); render(); examTick(); setInterval(examTick, 500); if (cloud && !accountLocked) cloud.run();
+  state.settings = { ...defaultSettings, ...state.settings }; state.activity ||= dailyData(); state.operationProgress ||= {}; C.fillCategories(state.banks, seedQuestions); applySeedCategoryCorrections(); C.restorePractice(state); ui.bankId = state.selectedBank || banks()[0]?.id || ''; ui.collectionBank = ''; state.exams ||= []; state.activeExam ||= null; initCloud(); render(); examTick(); setInterval(examTick, 500); if (cloud && !accountLocked) cloud.run();
   if ('serviceWorker' in navigator && window.isSecureContext && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   if (!storageOK) toast('本地存储不可用。你仍可练习，但请在关闭前导出完整备份。');
 })();

@@ -1,7 +1,12 @@
-const CACHE = 'tijian-mobile-20261120-v20';
-const FILES = ['./', 'index.html', 'style.css', 'mobile.css', 'core.js', 'seed.js', 'config.js', 'cloud.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable.png', 'icons/apple-touch-icon.png'];
+const CACHE = 'tijian-mobile-20261123-v21';
+const FILES = ['./', 'index.html', 'style.css', 'mobile.css', 'core.js', 'seed.js', 'operations.js', 'operation-assets-manifest.json', 'config.js', 'cloud.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable.png', 'icons/apple-touch-icon.png'];
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(FILES)).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(CACHE).then(async cache => {
+    await cache.addAll(FILES);
+    const response = await fetch('operation-assets-manifest.json');
+    const assets = await response.json();
+    await cache.addAll(assets.files.map(file => 'operation-assets/' + file));
+  }).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', event => {
   event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith('tijian-mobile-') && key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim()));

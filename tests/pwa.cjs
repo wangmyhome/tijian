@@ -37,8 +37,16 @@ const path = require('node:path');
     // Offline navigation also resolves to the installed application shell.
     await page.goto(base + '/offline-reopen');
     await page.getByRole('heading', { name: '我的题库', exact: true }).waitFor();
+    await page.locator('.operation-home-card').tap();
+    await page.locator('[data-unit=unit2-web]').click();
+    await page.locator('[data-id="2.3.1"]').click();
+    const offlineMaterial = await page.evaluate(async () => {
+      const response = await fetch('./operation-assets/2.3.1/素材/city_card.zip');
+      return { ok: response.ok, bytes: (await response.arrayBuffer()).byteLength };
+    });
+    assert(offlineMaterial.ok && offlineMaterial.bytes > 1000, 'operation starter material remains available offline');
     assert.deepEqual(errors, []);
-    console.log('PASS: installed app caches all assets, reopens offline and retains answers');
+    console.log('PASS: installed app caches question bank and operation materials, reopens offline and retains answers');
   } finally {
     if (browser) await browser.close();
     await new Promise(resolve => server.close(resolve));

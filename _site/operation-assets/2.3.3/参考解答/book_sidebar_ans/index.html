@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>书目选择</title>
+	<!--引用js文件夹中的jquery库-->
+  <script src="js/jquery-1.7.2.min.js"></script>
+ 
+</head>
+<body>
+
+<div class="box">
+      <div id="left">
+        <p>可选项</p>
+        <select multiple="multiple">
+          <option>数据结构</option>
+          <option>算法分析与设计</option>
+          <option>离散数学</option>
+          <option>Web前端设计与开发</option>
+          <option>面向对象程序设计</option>
+          <option>机器学习</option>
+        </select>
+      </div>
+      <div id="opt">
+        <input id="toRight" type="button" value=">"><br>
+        <input id="toLeft" type="button" value="<"><br>
+        <input id="toAllRight" type="button" value=">>"><br>
+        <input id="toAllLeft" type="button" value="<<"><br>
+      </div>
+      <div id="right">
+        <p>已选项</p>
+        <select multiple="multiple"></select>
+      </div>
+    </div>
+    
+   <div class="float">
+	<div class="float2">
+        <a href="javascript:" class="bar"></a>
+		<ul>
+			<li><a href="javascript:;">数据结构</a></li>
+			<li><a href="javascript:;">算法分析与设计</a></li>
+			<li><a href="javascript:;">离散数学</a></li>
+			<li><a href="javascript:;">Web前端设计与开发</a></li>
+			<li><a href="javascript:;">面向对象程序设计</a></li>
+			<li><a href="javascript:;">机器学习</a></li>
+			
+		</ul>
+	</div>
+</div>
+<link href="css/style.css" rel="stylesheet" type="text/css" />
+
+<script type="text/javascript" src="suspending.js"></script>
+<script type="text/javascript" src="leftRightMove.js"></script>
+</body>
+</html>

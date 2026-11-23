@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>预订显示</title>
+
+<link rel="stylesheet" href="css/style.css">
+ 
+</head>
+<body>
+	
+
+ <table>
+        <tr><th>操作</th><th>编号</th><th>顾客</th><th>桌号</th></tr>
+        <tr>
+          <td><input type="checkbox" value="1"></td>
+          <td>1</td><td>4</td><td>M8</td>
+        </tr>
+        <tr>
+          <td><input type="checkbox" value="1"></td>
+          <td>2</td><td>6</td><td>M2</td>
+        </tr>
+        <tr>
+          <td><input type="checkbox" value="1"></td>
+          <td>3</td><td>2</td><td>S1</td>
+        </tr>
+        
+        <tr>
+          <td colspan="4">
+            <input type="button" value="全选" id="checkAll">
+            <input type="button" value="全不选" id="uncheckAll">
+            <input type="button" value="反选" id="checkInvert">
+          </td>
+        <tr>
+ </table>
+<div class="scrollDiv" id="s1">
+			<ul>
+				<li>M8 4位</a></li>
+				<li>M2 6位</a></li>
+				<li>S1 2位</a></li>
+			</ul>
+</div>
+
+<!--引用js文件夹中的jQuery库 -->
+<script src="js/jquery-1.12.4.min.js"></script>
+ <script type="text/javascript" src="plugin.js"></script>
+ <script type="text/javascript" src="selectAll.js"></script>
+<script type="text/javascript" src="autoScroll.js"></script>
+</script>
+</body>
+</html>

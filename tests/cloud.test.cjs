@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { Client, Sync, CloudError } = require('../cloud.js');
 const C = require('../core.js');
 const clone = structuredClone;
-const fixture = () => ({ version: 1, banks: [{ id: 'b', name: '题库', questions: [C.normalize({ 题型: '单选题', 题目: '问题', 选项A: '甲', 选项B: '乙', 答案: 'A' }, 0)] }], settings: { theme: 'light' }, records: {}, exams: [], activity: {}, session: null });
+const fixture = () => ({ version: 1, banks: [{ id: 'b', name: '题库', questions: [C.normalize({ 题型: '单选题', 题目: '问题', 选项A: '甲', 选项B: '乙', 答案: 'A' }, 0)] }], settings: { theme: 'light' }, records: {}, operationProgress: {}, exams: [], activity: {}, session: null });
 function server() {
   return { row: null, fail: false, async read(known) { if (this.fail) throw new CloudError('断网', 'network'); if (!this.row) return null; const row = clone(this.row); if (known === row.revision) delete row.payload; return row; }, async write(revision, payload) { if ((this.row?.revision || 0) !== revision) return { ok: false, ...clone(this.row) }; this.row = { revision: revision + 1, payload: clone(payload), updated_at: new Date().toISOString() }; return { ok: true, revision: this.row.revision, updated_at: this.row.updated_at }; } };
 }
@@ -21,6 +21,14 @@ test('a second device downloads the first device’s saved workspace', async () 
   assert.equal(b.state.records['b/q'].favorite, true);
   assert.equal(b.meta.revision, a.meta.revision);
   assert.equal(remote.row.revision, 2);
+});
+test('operation task completion and private notes sync with the signed-in account', async () => {
+  const remote = server(), a = device(remote); await a.sync.run();
+  a.state.operationProgress['2.3.1'] = { status: 'done', note: '轮播和悬停暂停已完成', updatedAt: '2026-11-23T02:00:00.000Z' };
+  a.sync.changed(); await a.sync.run();
+  const b = device(remote); await b.sync.run();
+  assert.deepEqual(b.state.operationProgress['2.3.1'], a.state.operationProgress['2.3.1']);
+  assert.deepEqual(b.state.records, {});
 });
 test('offline edits remain pending and upload when the connection returns', async () => {
   const remote = server(), d = device(remote); await d.sync.run();
