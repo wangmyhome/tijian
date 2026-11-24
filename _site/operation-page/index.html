@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>计算机程序设计员 · 三级操作题</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; color: #202928; background: #edf0ef; font: 15px system-ui, sans-serif; }
+  header { background: #173633; color: white; padding: 15px 24px; display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 20px; }
+  header span { color: #c1d8d2; font-size: 13px; }
+  .layout { display: grid; grid-template-columns: 282px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; }
+  aside { overflow: auto; overscroll-behavior: contain; padding: 18px 20px; border-right: 1px solid #d4ddda; background: #fafbf9; }
+  aside h2 { margin: 12px 0 10px; font-size: 15px; }
+  aside section + section { border-top: 1px solid #dce4e0; margin-top: 18px; padding-top: 4px; }
+  aside h3 { color: #51635d; font-size: 13px; font-weight: 500; margin: 12px 0 6px; }
+  .numbers { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; }
+  button, .button { border: 1px solid #cad6d1; background: #fff; color: #27433b; border-radius: 5px; padding: 7px 10px; cursor: pointer; font: inherit; text-decoration: none; }
+  .numbers button { font-size: 12px; padding: 7px 0; font-variant-numeric: tabular-nums; }
+  button:hover, .button:hover { background: #e8f3ed; }
+  button[aria-current], button[aria-expanded="true"] { background: #17644e; border-color: #17644e; color: white; }
+  :focus-visible { outline: 2px solid #986511; outline-offset: 2px; }
+  main { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+  .toolbar { position: sticky; top: 0; z-index: 1; background: #fafbf9; border-bottom: 1px solid #d4ddda; padding: 12px 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .toolbar h2 { margin: 0; font-size: 18px; }
+  #page-count { margin-right: auto; color: #51635d; font-size: 13px; }
+  #toggle { font-weight: 650; }
+  .content { margin: 20px auto; width: min(850px, calc(100% - 32px)); }
+  .sheet { display: block; width: 100%; height: auto; background: white; box-shadow: 0 1px 5px #17282222; margin-bottom: 18px; }
+  #answers { background: white; padding: 16px 20px; margin-bottom: 20px; border-top: 3px solid #17644e; }
+  #answers h3 { margin: 0 0 12px; font-size: 17px; }
+  figure { margin: 0; padding: 14px 0; border-top: 1px solid #dce4e0; }
+  figcaption { display: flex; gap: 8px 16px; align-items: baseline; flex-wrap: wrap; margin-bottom: 8px; overflow-wrap: anywhere; }
+  a { color: #17644e; }
+  figure img { display: block; max-width: 100%; height: auto; margin: 8px 0; }
+  pre { padding: 12px; background: #f0f4f1; overflow: auto; font: 13px/1.5 ui-monospace, monospace; }
+  iframe { width: 100%; height: 350px; background: white; border: 1px solid #dce4e0; }
+  @media (max-width: 740px) {
+    .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    aside { max-height: 28dvh; border-right: 0; border-bottom: 1px solid #d4ddda; display: grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap: 14px; }
+    aside section + section { border-top: 0; margin: 0; padding: 0; }
+    .toolbar { padding-inline: 12px; }
+    .content { width: calc(100% - 16px); margin-top: 10px; }
+  }
+</style>
+<header><h1>计算机程序设计员</h1><span id="exam-count"></span></header>
+<div class="layout">
+  <aside id="navigation" aria-label="题号"></aside>
+  <main>
+    <div class="toolbar">
+      <h2 id="current"></h2>
+      <span id="page-count"></span>
+      <a id="pdf" class="button" target="_blank" rel="noopener">打开 PDF</a>
+      <button id="toggle" type="button" aria-expanded="false" aria-controls="answers">参考答案</button>
+    </div>
+    <div class="content">
+      <section id="answers" hidden></section>
+      <section id="question" aria-label="试题单"></section>
+    </div>
+  </main>
+</div>
+<script src="data.js"></script>
+<script>
+  const units = [
+    ['第一单元 · 程序开发准备', [['1.1', '识读、分析设计文档'], ['1.2', '编写、提交设计文档']]],
+    ['第二单元 · 程序编写与修改', [['2.2', '数据库程序设计（SQL）'], ['2.3', '网页程序设计（Web 前端）'], ['2.4', '网络应用程序设计（Java）']]],
+    ['第三单元 · 程序调试与验证', [['3.1', '程序调试'], ['3.2', '功能验证'], ['3.3', '程序调试与功能验证']]],
+  ];
+  document.getElementById('exam-count').textContent = '三级操作题 · ' + Object.keys(exam).length + ' 道';
+  const buttons = new Map();
+  const navigation = document.getElementById('navigation');
+  const current = document.getElementById('current');
+  const readingPane = document.querySelector('main');
+  const pageCount = document.getElementById('page-count');
+  const pdf = document.getElementById('pdf');
+  const toggle = document.getElementById('toggle');
+  const answers = document.getElementById('answers');
+  const question = document.getElementById('question');
+  let active;
+
+  function element(tag, text) {
+    const node = document.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function preview(url, label) {
+    const img = element('img');
+    img.src = url;
+    img.alt = label;
+    img.loading = 'lazy';
+    return img;
+  }
+
+  for (const [unitName, groups] of units) {
+    const section = element('section');
+    section.append(element('h2', unitName));
+    for (const [prefix, groupName] of groups) {
+      section.append(element('h3', groupName));
+      const row = element('div');
+      row.className = 'numbers';
+      for (const id of Object.keys(exam).filter(id => id.startsWith(prefix + '.'))) {
+        const button = element('button', id);
+        button.type = 'button';
+        button.addEventListener('click', () => {
+          if (location.hash === '#' + id) select(id);
+          else location.hash = id;
+        });
+        row.append(button);
+        buttons.set(id, button);
+      }
+      section.append(row);
+    }
+    navigation.append(section);
+  }
+
+  function select(id) {
+    if (active === id) return;
+    buttons.get(active)?.removeAttribute('aria-current');
+    active = id;
+    buttons.get(id).setAttribute('aria-current', 'true');
+    current.textContent = '试题 ' + id;
+    const { pages, pdf: pdfPath } = exam[id];
+    pageCount.textContent = '共 ' + pages.length + ' 页';
+    pdf.href = pdfPath;
+    answers.hidden = true;
+    answers.replaceChildren();
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.textContent = '参考答案';
+    question.replaceChildren(...pages.map((url, index) => {
+      const img = preview(url, id + ' 试题单第 ' + (index + 1) + ' 页');
+      img.className = 'sheet';
+      img.loading = 'eager';
+      return img;
+    }));
+    readingPane.scrollTop = 0;
+  }
+
+  function selectFromHash() {
+    const id = location.hash.slice(1);
+    select(buttons.has(id) ? id : '1.1.1');
+  }
+
+  toggle.addEventListener('click', () => {
+    const show = answers.hidden;
+    if (show && !answers.hasChildNodes()) {
+      answers.append(element('h3', active + ' 参考答案'));
+      for (const item of exam[active].answers) {
+        const figure = element('figure');
+        const caption = element('figcaption');
+        const download = element('a', '下载原文件');
+        download.href = item.url;
+        download.download = item.name.split('/').pop();
+        caption.append(element('strong', item.name), download);
+        figure.append(caption);
+        for (const [index, url] of (item.images || []).entries()) {
+          figure.append(preview(url, item.name + ' 预览 ' + (index + 1)));
+        }
+        if (item.web) {
+          const frame = element('iframe');
+          frame.title = '网页答案预览';
+          frame.setAttribute('sandbox', 'allow-scripts');
+          frame.src = item.url;
+          figure.append(frame);
+        }
+        if (item.code !== undefined) {
+          const pre = element('pre');
+          pre.append(element('code', item.code));
+          figure.append(pre);
+        }
+        answers.append(figure);
+      }
+    }
+    answers.hidden = !show;
+    toggle.setAttribute('aria-expanded', String(show));
+    toggle.textContent = show ? '收起参考答案' : '参考答案';
+    if (show) readingPane.scrollTop = 0;
+  });
+
+  window.addEventListener('hashchange', selectFromHash);
+  selectFromHash();
+</script>
+</html>
